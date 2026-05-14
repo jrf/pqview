@@ -5,7 +5,7 @@ build:
     cargo build --release
 
 install: build
-    cp target/release/prview ~/.cargo/bin/
+    cp target/release/pqview ~/.cargo/bin/
 
 clean:
     cargo clean

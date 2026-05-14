@@ -18,6 +18,7 @@ pub enum Mode {
     Browse,
     Search,
     Filter,
+    Columns,
 }
 
 pub struct App {
@@ -38,6 +39,10 @@ pub struct App {
     pub filter_cursor_idx: usize,
     pub filter_scroll: usize,
 
+    // Column visibility
+    pub visible_columns: HashSet<String>,
+    pub column_picker_idx: usize,
+
     pub rows: Vec<Vec<String>>,
     pub total_matches: usize,
     pub selected: usize,
@@ -54,6 +59,7 @@ pub struct App {
 
 impl App {
     fn new(file: PathBuf, columns: Vec<String>) -> Self {
+        let visible_columns: HashSet<String> = columns.iter().cloned().collect();
         Self {
             mode: Mode::Browse,
             file,
@@ -67,6 +73,8 @@ impl App {
             filter_selected: HashSet::new(),
             filter_cursor_idx: 0,
             filter_scroll: 0,
+            visible_columns,
+            column_picker_idx: 0,
             rows: Vec::new(),
             total_matches: 0,
             selected: 0,
@@ -96,6 +104,37 @@ impl App {
 
     pub fn search_column_name(&self) -> &str {
         &self.columns[self.search_column]
+    }
+
+    pub fn display_columns(&self) -> Vec<String> {
+        self.columns
+            .iter()
+            .filter(|c| self.visible_columns.contains(*c))
+            .cloned()
+            .collect()
+    }
+
+    fn toggle_column_visibility(&mut self) {
+        let col = &self.columns[self.column_picker_idx];
+        if self.visible_columns.contains(col) {
+            if self.visible_columns.len() > 1 {
+                self.visible_columns.remove(col);
+            }
+        } else {
+            self.visible_columns.insert(col.clone());
+        }
+        self.snap_filter_column();
+    }
+
+    fn snap_filter_column(&mut self) {
+        if !self.visible_columns.contains(&self.columns[self.filter_column]) {
+            for (i, col) in self.columns.iter().enumerate() {
+                if self.visible_columns.contains(col) {
+                    self.filter_column = i;
+                    return;
+                }
+            }
+        }
     }
 
     fn execute_query(&mut self) {
@@ -344,13 +383,23 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
-                    if app.filter_column > 0 {
-                        app.filter_column -= 1;
+                    let mut idx = app.filter_column;
+                    while idx > 0 {
+                        idx -= 1;
+                        if app.visible_columns.contains(&app.columns[idx]) {
+                            app.filter_column = idx;
+                            break;
+                        }
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    if app.filter_column < app.columns.len() - 1 {
-                        app.filter_column += 1;
+                    let mut idx = app.filter_column;
+                    while idx < app.columns.len() - 1 {
+                        idx += 1;
+                        if app.visible_columns.contains(&app.columns[idx]) {
+                            app.filter_column = idx;
+                            break;
+                        }
                     }
                 }
                 KeyCode::Char('n') => app.next_page(),
@@ -372,6 +421,10 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 }
                 KeyCode::Char('C') => {
                     app.clear_all_filters();
+                }
+                KeyCode::Char('v') => {
+                    app.column_picker_idx = 0;
+                    app.mode = Mode::Columns;
                 }
                 _ => {}
             },
@@ -418,6 +471,26 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 KeyCode::Char(c) => {
                     app.search_query.insert(app.search_cursor, c);
                     app.search_cursor += 1;
+                }
+                _ => {}
+            },
+
+            Mode::Columns => match key.code {
+                KeyCode::Esc | KeyCode::Char('v') => {
+                    app.mode = Mode::Browse;
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    app.toggle_column_visibility();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if app.column_picker_idx > 0 {
+                        app.column_picker_idx -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if app.column_picker_idx < app.columns.len().saturating_sub(1) {
+                        app.column_picker_idx += 1;
+                    }
                 }
                 _ => {}
             },

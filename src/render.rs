@@ -1,6 +1,7 @@
 use crate::app::{App, Mode};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use std::collections::HashSet;
 use unicode_width::UnicodeWidthStr;
 
 const HIGHLIGHT_COLOR: Color = Color::Rgb(122, 162, 247);
@@ -15,7 +16,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
     if app.mode == Mode::Filter {
-        draw_with_filter_popup(f, app, area);
+        draw_with_popup(f, app, area, DrawPopup::Filter);
+        return;
+    }
+
+    if app.mode == Mode::Columns {
+        draw_with_popup(f, app, area, DrawPopup::Columns);
         return;
     }
 
@@ -44,8 +50,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_with_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
-    // Draw the normal view behind
+enum DrawPopup {
+    Filter,
+    Columns,
+}
+
+fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
     let mut constraints = vec![
         Constraint::Length(3),
         Constraint::Length(3),
@@ -70,24 +80,28 @@ fn draw_with_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
         draw_preview(f, app, chunks[3]);
     }
 
-    // Draw filter popup overlay
+    match popup {
+        DrawPopup::Filter => draw_filter_popup(f, app, area),
+        DrawPopup::Columns => draw_columns_popup(f, app, area),
+    }
+}
+
+fn draw_filter_popup(f: &mut Frame, app: &App, area: Rect) {
     let col_name = &app.columns[app.filter_column];
     let popup_area = centered_rect(50, 70, area);
     f.render_widget(Clear, popup_area);
 
     let selected_count = app.filter_selected.len();
-    let title = format!(" Filter: {} ", col_name);
     let bottom = if selected_count > 0 {
-        format!(" {} selected — Space toggle, Esc close ", selected_count)
+        format!(" {} selected | Space toggle | Esc close ", selected_count)
     } else {
-        " Space toggle, Esc close ".to_string()
+        " Space toggle | Esc close ".to_string()
     };
 
     let block = Block::default()
-        .title(title)
+        .title(format!(" Filter: {} ", col_name))
         .title_style(Style::default().fg(FILTER_ACTIVE_COLOR).bold())
         .title_bottom(bottom)
-        .title_style(Style::default().fg(DIM_COLOR))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(FILTER_ACTIVE_COLOR));
 
@@ -102,29 +116,77 @@ fn draw_with_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let visible_height = inner.height as usize;
-    let scroll = if app.filter_cursor_idx >= visible_height {
-        app.filter_cursor_idx - visible_height + 1
+    draw_checklist(
+        f,
+        inner,
+        &app.filter_suggestions,
+        &app.filter_selected,
+        app.filter_cursor_idx,
+        FILTER_ACTIVE_COLOR,
+    );
+}
+
+fn draw_columns_popup(f: &mut Frame, app: &App, area: Rect) {
+    let popup_area = centered_rect(50, 70, area);
+    f.render_widget(Clear, popup_area);
+
+    let visible_count = app.visible_columns.len();
+    let bottom = format!(
+        " {}/{} shown | Space toggle | Esc close ",
+        visible_count,
+        app.columns.len()
+    );
+
+    let block = Block::default()
+        .title(" Columns ")
+        .title_style(Style::default().fg(HIGHLIGHT_COLOR).bold())
+        .title_bottom(bottom)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(HIGHLIGHT_COLOR));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    draw_checklist(
+        f,
+        inner,
+        &app.columns,
+        &app.visible_columns,
+        app.column_picker_idx,
+        HIGHLIGHT_COLOR,
+    );
+}
+
+fn draw_checklist(
+    f: &mut Frame,
+    area: Rect,
+    items: &[String],
+    selected: &HashSet<String>,
+    cursor: usize,
+    active_color: Color,
+) {
+    let visible_height = area.height as usize;
+    let scroll = if cursor >= visible_height {
+        cursor - visible_height + 1
     } else {
         0
     };
 
-    let items: Vec<ListItem> = app
-        .filter_suggestions
+    let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_height)
         .map(|(i, val)| {
-            let is_selected = app.filter_selected.contains(val);
-            let is_cursor = i == app.filter_cursor_idx;
+            let is_selected = selected.contains(val);
+            let is_cursor = i == cursor;
 
             let checkbox = if is_selected { "[x] " } else { "[ ] " };
             let text = format!("{}{}", checkbox, val);
 
             let style = if is_cursor && is_selected {
                 Style::default()
-                    .fg(FILTER_ACTIVE_COLOR)
+                    .fg(active_color)
                     .bg(FOCUSED_COL_BG)
                     .bold()
             } else if is_cursor {
@@ -133,17 +195,16 @@ fn draw_with_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
                     .bg(FOCUSED_COL_BG)
                     .bold()
             } else if is_selected {
-                Style::default().fg(FILTER_ACTIVE_COLOR)
+                Style::default().fg(active_color)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(DIM_COLOR)
             };
 
             ListItem::new(text).style(style)
         })
         .collect();
 
-    let list = List::new(items);
-    f.render_widget(list, inner);
+    f.render_widget(List::new(list_items), area);
 }
 
 fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -182,16 +243,18 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let visible_cols = app.display_columns();
     let mut spans: Vec<Span> = Vec::new();
-    for (i, col) in app.columns.iter().enumerate() {
-        if i > 0 {
+    for (vi, col) in visible_cols.iter().enumerate() {
+        if vi > 0 {
             spans.push(Span::styled(" | ", Style::default().fg(BORDER_COLOR)));
         }
 
+        let all_idx = app.columns.iter().position(|c| c == col).unwrap_or(0);
         let filter_display = app.filter_display(col);
-        let is_focused = i == app.filter_column;
+        let is_focused = all_idx == app.filter_column;
         let is_search_col =
-            i == app.search_column && !app.search_query.is_empty();
+            all_idx == app.search_column && !app.search_query.is_empty();
 
         let display = if let Some(ref vals) = filter_display {
             format!("{}={}", col, vals)
@@ -199,9 +262,7 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
             col.clone()
         };
 
-        let fg = if is_search_col && filter_display.is_some() {
-            SEARCH_COLOR
-        } else if is_search_col {
+        let fg = if is_search_col {
             SEARCH_COLOR
         } else if filter_display.is_some() {
             FILTER_ACTIVE_COLOR
@@ -270,9 +331,11 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn compute_filter_scroll(app: &App, visible_width: u16) -> u16 {
+    let visible_cols = app.display_columns();
+    let focused_col = app.columns.get(app.filter_column).map(|s| s.as_str());
     let mut offset = 0u16;
-    for (i, col) in app.columns.iter().enumerate() {
-        if i == app.filter_column {
+    for col in &visible_cols {
+        if Some(col.as_str()) == focused_col {
             break;
         }
         let filter_display = app.filter_display(col);
@@ -392,7 +455,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(table, area);
 
     let help =
-        " j/k nav | h/l column | f filter | / search | n/p page | Tab preview | C clear | q quit ";
+        " j/k nav | h/l column | f filter | / search | v columns | n/p page | Tab preview | C clear | q quit ";
     let help_span = Span::styled(help, Style::default().fg(DIM_COLOR));
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {
@@ -477,7 +540,7 @@ fn highlight_matches<'a>(text: &'a str, query: &str) -> Line<'a> {
 }
 
 fn compute_visible_columns(app: &App, available_width: usize) -> Vec<(String, usize)> {
-    let cols = &app.columns;
+    let cols = app.display_columns();
     let num_cols = cols.len();
     if num_cols == 0 {
         return Vec::new();
@@ -488,17 +551,14 @@ fn compute_visible_columns(app: &App, available_width: usize) -> Vec<(String, us
     let total_min = num_cols * min_col_width + separator_space;
 
     if available_width < min_col_width {
-        return vec![(cols[app.filter_column].clone(), available_width)];
+        return vec![(cols[0].clone(), available_width)];
     }
 
     if available_width < total_min {
         let fit_count = (available_width + 1) / (min_col_width + 1);
         let fit_count = fit_count.max(1);
-        let start = app.filter_column.saturating_sub(fit_count / 2);
-        let end = (start + fit_count).min(num_cols);
-        let start = end.saturating_sub(fit_count);
         let per_col = available_width / fit_count.max(1);
-        return cols[start..end]
+        return cols[..fit_count.min(num_cols)]
             .iter()
             .map(|name| (name.clone(), per_col))
             .collect();

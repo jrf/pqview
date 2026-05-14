@@ -1,4 +1,4 @@
-# prview
+# pqview
 
 A TUI for searching and filtering large Parquet files. Built for exploring text-heavy datasets without loading everything into memory.
 
@@ -14,13 +14,13 @@ Or manually:
 
 ```
 cargo build --release
-cp target/release/prview ~/.cargo/bin/
+cp target/release/pqview ~/.cargo/bin/
 ```
 
 ## Usage
 
 ```
-prview <file.parquet>
+pqview <file.parquet>
 ```
 
 ## Keybindings

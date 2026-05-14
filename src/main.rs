@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "prview", about = "Search through large Parquet files")]
+#[command(name = "pqview", about = "Search through large Parquet files")]
 struct Cli {
     /// Path to the Parquet file
     file: PathBuf,
