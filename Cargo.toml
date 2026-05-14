@@ -1,0 +1,13 @@
+[package]
+name = "prview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.28"
+polars = { version = "0.46", features = ["lazy", "parquet", "regex", "strings", "is_in"] }
+clap = { version = "4", features = ["derive"] }
+unicode-width = "0.2"
+textwrap = "0.16"
+anyhow = "1"
