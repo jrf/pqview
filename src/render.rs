@@ -11,7 +11,7 @@ const BORDER_COLOR: Color = Color::Rgb(68, 68, 100);
 const SELECTED_BG: Color = Color::Rgb(40, 42, 60);
 const FOCUSED_COL_BG: Color = Color::Rgb(50, 52, 72);
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
     if app.mode == Mode::Filter {
@@ -44,7 +44,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-fn draw_with_filter_popup(f: &mut Frame, app: &App, area: Rect) {
+fn draw_with_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
     // Draw the normal view behind
     let mut constraints = vec![
         Constraint::Length(3),
@@ -286,7 +286,7 @@ fn compute_filter_scroll(app: &App, visible_width: u16) -> u16 {
     offset.saturating_sub(visible_width / 3)
 }
 
-fn draw_results_table(f: &mut Frame, app: &App, area: Rect) {
+fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     let status = if app.loading {
         " loading... ".to_string()
     } else {
@@ -324,6 +324,10 @@ fn draw_results_table(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // header(1) + border(2) = 3 lines of overhead
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    app.table_height = visible_rows;
+
     let visible_columns = compute_visible_columns(app, area.width.saturating_sub(2) as usize);
 
     let header_cells: Vec<Cell> = visible_columns
@@ -352,6 +356,8 @@ fn draw_results_table(f: &mut Frame, app: &App, area: Rect) {
         .rows
         .iter()
         .enumerate()
+        .skip(app.scroll_offset)
+        .take(visible_rows)
         .map(|(i, row)| {
             let style = if i == app.selected {
                 Style::default().bg(SELECTED_BG).fg(Color::White)

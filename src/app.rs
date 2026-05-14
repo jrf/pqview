@@ -46,6 +46,7 @@ pub struct App {
     pub preview_scroll: usize,
     pub preview_column: Option<usize>,
     pub show_preview: bool,
+    pub table_height: usize,
     pub loading: bool,
     pub flash: Option<(String, Instant)>,
     query_rx: Option<mpsc::Receiver<Result<search::SearchResult>>>,
@@ -74,6 +75,7 @@ impl App {
             preview_scroll: 0,
             preview_column: None,
             show_preview: true,
+            table_height: 0,
             loading: false,
             flash: None,
             query_rx: None,
@@ -281,7 +283,7 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
     loop {
         app.check_query_result();
 
-        terminal.draw(|f| render::draw(f, &app))?;
+        terminal.draw(|f| render::draw(f, &mut app))?;
 
         let timeout = if app.loading {
             Duration::from_millis(50)
@@ -335,6 +337,10 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     if app.selected < app.rows.len().saturating_sub(1) {
                         app.selected += 1;
                         app.preview_scroll = 0;
+                        let visible = app.table_height.saturating_sub(1);
+                        if visible > 0 && app.selected >= app.scroll_offset + visible {
+                            app.scroll_offset = app.selected - visible + 1;
+                        }
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
