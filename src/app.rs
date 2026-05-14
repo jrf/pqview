@@ -117,13 +117,19 @@ impl App {
     fn toggle_column_visibility(&mut self) {
         let col = &self.columns[self.column_picker_idx];
         if self.visible_columns.contains(col) {
-            if self.visible_columns.len() > 1 {
-                self.visible_columns.remove(col);
-            }
+            self.visible_columns.remove(col);
         } else {
             self.visible_columns.insert(col.clone());
         }
         self.snap_filter_column();
+    }
+
+    fn select_all_columns(&mut self) {
+        self.visible_columns = self.columns.iter().cloned().collect();
+    }
+
+    fn deselect_all_columns(&mut self) {
+        self.visible_columns.clear();
     }
 
     fn snap_filter_column(&mut self) {
@@ -481,6 +487,12 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 }
                 KeyCode::Char(' ') | KeyCode::Enter => {
                     app.toggle_column_visibility();
+                }
+                KeyCode::Char('a') => {
+                    app.select_all_columns();
+                }
+                KeyCode::Char('d') => {
+                    app.deselect_all_columns();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if app.column_picker_idx > 0 {

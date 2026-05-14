@@ -132,7 +132,7 @@ fn draw_columns_popup(f: &mut Frame, app: &App, area: Rect) {
 
     let visible_count = app.visible_columns.len();
     let bottom = format!(
-        " {}/{} shown | Space toggle | Esc close ",
+        " {}/{} shown | Space toggle | a all | d none | Esc close ",
         visible_count,
         app.columns.len()
     );
