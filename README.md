@@ -1,8 +1,8 @@
 # prview
 
-A TUI for searching and filtering large Parquet files. Built for exploring clinical notes and other text-heavy datasets without loading everything into memory.
+A TUI for searching and filtering large Parquet files. Built for exploring text-heavy datasets without loading everything into memory.
 
-Uses Polars lazy scanning to push filters and searches down to the Parquet reader, so it handles multi-GB files without breaking a sweat.
+Uses Polars lazy scanning to push filters and searches down to the Parquet reader, and it handles multi-GB files without breaking a sweat.
 
 ## Install
 
