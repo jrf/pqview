@@ -84,6 +84,64 @@ pub fn query(
     })
 }
 
+pub fn export(
+    path: &Path,
+    output: &Path,
+    filters: &HashMap<String, Vec<String>>,
+    exclude_empty: &HashSet<String>,
+    search_column: Option<&str>,
+    search_text: &str,
+    columns: &[String],
+) -> Result<usize> {
+    let lf = LazyFrame::scan_parquet(path, Default::default())?;
+    let mut filtered = lf;
+
+    for (column, values) in filters {
+        if values.is_empty() {
+            continue;
+        }
+        let lower_vals: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
+        let series = Series::new("".into(), &lower_vals);
+        filtered = filtered.filter(
+            col(column)
+                .cast(DataType::String)
+                .str()
+                .to_lowercase()
+                .is_in(lit(series)),
+        );
+    }
+
+    for column in exclude_empty {
+        filtered = filtered.filter(
+            col(column)
+                .is_not_null()
+                .and(col(column).cast(DataType::String).neq(lit(""))),
+        );
+    }
+
+    if let Some(search_col) = search_column {
+        if !search_text.is_empty() {
+            let pattern = format!("(?i){}", regex_escape(search_text));
+            filtered = filtered.filter(
+                col(search_col)
+                    .cast(DataType::String)
+                    .str()
+                    .contains(lit(pattern), false),
+            );
+        }
+    }
+
+    let select_cols: Vec<Expr> = columns.iter().map(|c| col(c)).collect();
+    let mut df = filtered.select(select_cols).collect()?;
+    let count = df.height();
+
+    use polars::prelude::ParquetWriter;
+    let file = std::fs::File::create(output)?;
+    ParquetWriter::new(file).finish(&mut df)?;
+
+    Ok(count)
+}
+
 pub fn unique_values(
     path: &Path,
     column: &str,

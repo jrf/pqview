@@ -41,6 +41,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_preview && chunks.len() > 3 {
         draw_preview(f, app, chunks[3]);
     }
+
+    if app.mode == Mode::Export {
+        draw_export_bar(f, app, area);
+    }
 }
 
 enum DrawPopup {
@@ -333,6 +337,25 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_export_bar(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let bar_area = Rect::new(area.x, area.bottom().saturating_sub(3), area.width, 3);
+    f.render_widget(Clear, bar_area);
+
+    let block = Block::default()
+        .title(" Export filtered data ")
+        .title_style(Style::default().fg(t.accent).bold())
+        .title_bottom(" Enter to save | Esc to cancel ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent));
+
+    let input = Span::styled(&app.export_path, Style::default().fg(t.text));
+    let paragraph = Paragraph::new(Line::from(vec![input])).block(block);
+    f.render_widget(paragraph, bar_area);
+
+    f.set_cursor_position((bar_area.x + 1 + app.export_cursor as u16, bar_area.y + 1));
+}
+
 fn filter_col_width(app: &App, col: &str) -> usize {
     let base = match app.filter_display(col) {
         Some(vals) => col.len() + 1 + vals.len(),
@@ -475,7 +498,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(table, area);
 
     let help =
-        " j/k nav | h/l column | f filter | / search | x !null | v columns | t theme | n/p page | Tab preview | C clear | q quit ";
+        " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | t theme | n/p page | Tab preview | C clear | q quit ";
     let help_span = Span::styled(help, Style::default().fg(t.text_muted));
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {

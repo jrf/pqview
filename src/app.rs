@@ -20,6 +20,7 @@ pub enum Mode {
     Search,
     Filter,
     Columns,
+    Export,
 }
 
 pub struct App {
@@ -46,6 +47,10 @@ pub struct App {
 
     // Exclude nulls/empties per column
     pub exclude_empty: HashSet<String>,
+
+    // Export
+    pub export_path: String,
+    pub export_cursor: usize,
 
     pub rows: Vec<Vec<String>>,
     pub total_matches: usize,
@@ -82,6 +87,8 @@ impl App {
             visible_columns,
             column_picker_idx: 0,
             exclude_empty: HashSet::new(),
+            export_path: String::new(),
+            export_cursor: 0,
             rows: Vec::new(),
             total_matches: 0,
             selected: 0,
@@ -488,6 +495,16 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 KeyCode::Char('t') => {
                     app.cycle_theme();
                 }
+                KeyCode::Char('w') => {
+                    let stem = app.file.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("output");
+                    let dir = app.file.parent().unwrap_or(std::path::Path::new("."));
+                    let default_path = dir.join(format!("{}_filtered.parquet", stem));
+                    app.export_path = default_path.to_string_lossy().to_string();
+                    app.export_cursor = app.export_path.len();
+                    app.mode = Mode::Export;
+                }
                 _ => {}
             },
 
@@ -579,6 +596,72 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     if app.filter_cursor_idx < app.filter_suggestions.len().saturating_sub(1) {
                         app.filter_cursor_idx += 1;
                     }
+                }
+                _ => {}
+            },
+
+            Mode::Export => match key.code {
+                KeyCode::Esc => {
+                    app.mode = Mode::Browse;
+                }
+                KeyCode::Enter => {
+                    let path = PathBuf::from(&app.export_path);
+                    let filters: HashMap<String, Vec<String>> = app
+                        .filters
+                        .iter()
+                        .filter(|(_, v)| !v.is_empty())
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let search = if app.search_query.is_empty() {
+                        None
+                    } else {
+                        Some(app.columns[app.search_column].as_str())
+                    };
+                    let visible = app.display_columns();
+                    match search::export(
+                        &app.file,
+                        &path,
+                        &filters,
+                        &app.exclude_empty,
+                        search,
+                        &app.search_query,
+                        &visible,
+                    ) {
+                        Ok(count) => {
+                            app.flash = Some((
+                                format!("Exported {} rows to {}", count, app.export_path),
+                                Instant::now(),
+                            ));
+                        }
+                        Err(e) => {
+                            app.flash = Some((format!("Export error: {}", e), Instant::now()));
+                        }
+                    }
+                    app.mode = Mode::Browse;
+                }
+                KeyCode::Backspace => {
+                    if app.export_cursor > 0 {
+                        app.export_cursor -= 1;
+                        app.export_path.remove(app.export_cursor);
+                    }
+                }
+                KeyCode::Left => {
+                    if app.export_cursor > 0 {
+                        app.export_cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if app.export_cursor < app.export_path.len() {
+                        app.export_cursor += 1;
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.export_path.clear();
+                    app.export_cursor = 0;
+                }
+                KeyCode::Char(c) => {
+                    app.export_path.insert(app.export_cursor, c);
+                    app.export_cursor += 1;
                 }
                 _ => {}
             },
