@@ -1,6 +1,6 @@
 use anyhow::Result;
 use polars::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub fn read_schema(path: &Path) -> Result<Schema> {
@@ -17,6 +17,7 @@ pub struct SearchResult {
 pub fn query(
     path: &Path,
     filters: &HashMap<String, Vec<String>>,
+    exclude_empty: &HashSet<String>,
     search_column: Option<&str>,
     search_text: &str,
     display_columns: &[String],
@@ -39,6 +40,14 @@ pub fn query(
                 .str()
                 .to_lowercase()
                 .is_in(lit(series)),
+        );
+    }
+
+    for column in exclude_empty {
+        filtered = filtered.filter(
+            col(column)
+                .is_not_null()
+                .and(col(column).cast(DataType::String).neq(lit(""))),
         );
     }
 
@@ -181,7 +190,7 @@ mod tests {
     #[test]
     fn test_browse_no_filters() {
         let cols = vec!["patient_id".into(), "clinical_note".into()];
-        let result = query(&test_file(), &HashMap::new(), None, "", &cols, 10, 0).unwrap();
+        let result = query(&test_file(), &HashMap::new(), &HashSet::new(), None, "", &cols, 10, 0).unwrap();
         assert_eq!(result.rows.len(), 10);
         assert_eq!(result.total_matches, 100);
     }
@@ -191,7 +200,7 @@ mod tests {
         let cols = vec!["patient_id".into(), "department".into()];
         let mut filters = HashMap::new();
         filters.insert("department".into(), vec!["Cardiology".into()]);
-        let result = query(&test_file(), &filters, None, "", &cols, 50, 0).unwrap();
+        let result = query(&test_file(), &filters, &HashSet::new(), None, "", &cols, 50, 0).unwrap();
         assert!(result.total_matches > 0);
         for row in &result.rows {
             assert_eq!(row[1].to_lowercase(), "cardiology");
@@ -206,7 +215,7 @@ mod tests {
             "department".into(),
             vec!["Cardiology".into(), "Emergency".into()],
         );
-        let result = query(&test_file(), &filters, None, "", &cols, 50, 0).unwrap();
+        let result = query(&test_file(), &filters, &HashSet::new(), None, "", &cols, 50, 0).unwrap();
         assert!(result.total_matches > 0);
         for row in &result.rows {
             let dept = row[1].to_lowercase();
@@ -220,6 +229,7 @@ mod tests {
         let result = query(
             &test_file(),
             &HashMap::new(),
+            &HashSet::new(),
             Some("clinical_note"),
             "chest pain",
             &cols,
@@ -243,6 +253,7 @@ mod tests {
         let result = query(
             &test_file(),
             &filters,
+            &HashSet::new(),
             Some("clinical_note"),
             "chest pain",
             &cols,

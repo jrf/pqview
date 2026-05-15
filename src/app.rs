@@ -43,6 +43,9 @@ pub struct App {
     pub visible_columns: HashSet<String>,
     pub column_picker_idx: usize,
 
+    // Exclude nulls/empties per column
+    pub exclude_empty: HashSet<String>,
+
     pub rows: Vec<Vec<String>>,
     pub total_matches: usize,
     pub selected: usize,
@@ -75,6 +78,7 @@ impl App {
             filter_scroll: 0,
             visible_columns,
             column_picker_idx: 0,
+            exclude_empty: HashSet::new(),
             rows: Vec::new(),
             total_matches: 0,
             selected: 0,
@@ -95,7 +99,7 @@ impl App {
     }
 
     pub fn has_active_filters(&self) -> bool {
-        self.filters.values().any(|v| !v.is_empty())
+        self.filters.values().any(|v| !v.is_empty()) || !self.exclude_empty.is_empty()
     }
 
     pub fn filter_display(&self, col: &str) -> Option<String> {
@@ -132,6 +136,17 @@ impl App {
         self.visible_columns.clear();
     }
 
+    fn toggle_exclude_empty(&mut self) {
+        let col = self.columns[self.filter_column].clone();
+        if self.exclude_empty.contains(&col) {
+            self.exclude_empty.remove(&col);
+        } else {
+            self.exclude_empty.insert(col);
+        }
+        self.reset_results();
+        self.execute_query();
+    }
+
     fn snap_filter_column(&mut self) {
         if !self.visible_columns.contains(&self.columns[self.filter_column]) {
             for (i, col) in self.columns.iter().enumerate() {
@@ -155,6 +170,7 @@ impl App {
         let offset = self.offset;
         let search_col = self.columns[self.search_column].clone();
         let search_text = self.search_query.clone();
+        let exclude_empty = self.exclude_empty.clone();
 
         self.loading = true;
 
@@ -167,8 +183,16 @@ impl App {
             } else {
                 Some(search_col.as_str())
             };
-            let result =
-                search::query(&path, &filters, search, &search_text, &columns, PAGE_SIZE, offset);
+            let result = search::query(
+                &path,
+                &filters,
+                &exclude_empty,
+                search,
+                &search_text,
+                &columns,
+                PAGE_SIZE,
+                offset,
+            );
             let _ = tx.send(result);
         });
     }
@@ -275,6 +299,7 @@ impl App {
 
     fn clear_all_filters(&mut self) {
         self.filters.clear();
+        self.exclude_empty.clear();
         self.search_query.clear();
         self.search_cursor = 0;
         self.reset_results();
@@ -296,6 +321,7 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
     match search::query(
         &app.file,
         &HashMap::new(),
+        &HashSet::new(),
         None,
         "",
         &columns,
@@ -366,6 +392,9 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     app.search_column = app.filter_column;
                     app.mode = Mode::Search;
                 }
+                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.next_page();
+                }
                 KeyCode::Char('f') => {
                     app.enter_filter_mode();
                 }
@@ -409,6 +438,9 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     }
                 }
                 KeyCode::Char('n') => app.next_page(),
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.prev_page();
+                }
                 KeyCode::Char('p') => app.prev_page(),
                 KeyCode::Tab => {
                     app.show_preview = !app.show_preview;
@@ -424,6 +456,9 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 }
                 KeyCode::Char('K') => {
                     app.preview_scroll = app.preview_scroll.saturating_sub(1);
+                }
+                KeyCode::Char('x') => {
+                    app.toggle_exclude_empty();
                 }
                 KeyCode::Char('C') => {
                     app.clear_all_filters();

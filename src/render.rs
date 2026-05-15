@@ -212,7 +212,8 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         .active_filters()
         .values()
         .filter(|v| !v.is_empty())
-        .count();
+        .count()
+        + app.exclude_empty.len();
 
     let border_style = if app.mode == Mode::Filter {
         Style::default().fg(FILTER_ACTIVE_COLOR)
@@ -255,16 +256,18 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         let is_focused = all_idx == app.filter_column;
         let is_search_col =
             all_idx == app.search_column && !app.search_query.is_empty();
+        let is_excluding_empty = app.exclude_empty.contains(col);
 
-        let display = if let Some(ref vals) = filter_display {
-            format!("{}={}", col, vals)
-        } else {
-            col.clone()
+        let display = match (&filter_display, is_excluding_empty) {
+            (Some(vals), true) => format!("{}={} !null", col, vals),
+            (Some(vals), false) => format!("{}={}", col, vals),
+            (None, true) => format!("{} !null", col),
+            (None, false) => col.clone(),
         };
 
         let fg = if is_search_col {
             SEARCH_COLOR
-        } else if filter_display.is_some() {
+        } else if filter_display.is_some() || is_excluding_empty {
             FILTER_ACTIVE_COLOR
         } else if is_focused {
             HIGHLIGHT_COLOR
@@ -330,21 +333,37 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn filter_col_width(app: &App, col: &str) -> usize {
+    let base = match app.filter_display(col) {
+        Some(vals) => col.len() + 1 + vals.len(),
+        None => col.len(),
+    };
+    if app.exclude_empty.contains(col) {
+        base + 6 // " !null"
+    } else {
+        base
+    }
+}
+
 fn compute_filter_scroll(app: &App, visible_width: u16) -> u16 {
     let visible_cols = app.display_columns();
+    let total_width: usize = visible_cols
+        .iter()
+        .map(|c| filter_col_width(app, c))
+        .sum::<usize>()
+        + visible_cols.len().saturating_sub(1) * 3;
+
+    if total_width <= visible_width as usize {
+        return 0;
+    }
+
     let focused_col = app.columns.get(app.filter_column).map(|s| s.as_str());
     let mut offset = 0u16;
     for col in &visible_cols {
         if Some(col.as_str()) == focused_col {
             break;
         }
-        let filter_display = app.filter_display(col);
-        let col_width = if let Some(ref vals) = filter_display {
-            col.len() + 1 + vals.len()
-        } else {
-            col.len()
-        };
-        offset += col_width as u16 + 3;
+        offset += filter_col_width(app, col) as u16 + 3;
     }
     offset.saturating_sub(visible_width / 3)
 }
@@ -455,7 +474,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(table, area);
 
     let help =
-        " j/k nav | h/l column | f filter | / search | v columns | n/p page | Tab preview | C clear | q quit ";
+        " j/k nav | h/l column | f filter | / search | x !null | v columns | n/p page | Tab preview | C clear | q quit ";
     let help_span = Span::styled(help, Style::default().fg(DIM_COLOR));
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {
