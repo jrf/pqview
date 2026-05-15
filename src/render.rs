@@ -308,7 +308,7 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(if !app.search_query.is_empty() {
+        .title_style(Style::default().fg(if is_searching || !app.search_query.is_empty() {
             SEARCH_COLOR
         } else {
             DIM_COLOR
