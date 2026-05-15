@@ -1,5 +1,6 @@
 use crate::render;
 use crate::search;
+use crate::theme::{self, Theme};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -57,6 +58,8 @@ pub struct App {
     pub table_height: usize,
     pub loading: bool,
     pub flash: Option<(String, Instant)>,
+    pub theme: Theme,
+    pub theme_idx: usize,
     query_rx: Option<mpsc::Receiver<Result<search::SearchResult>>>,
 }
 
@@ -90,6 +93,8 @@ impl App {
             table_height: 0,
             loading: false,
             flash: None,
+            theme: theme::THEMES[0].clone(),
+            theme_idx: 0,
             query_rx: None,
         }
     }
@@ -134,6 +139,12 @@ impl App {
 
     fn deselect_all_columns(&mut self) {
         self.visible_columns.clear();
+    }
+
+    fn cycle_theme(&mut self) {
+        self.theme_idx = (self.theme_idx + 1) % theme::THEMES.len();
+        self.theme = theme::THEMES[self.theme_idx].clone();
+        self.flash = Some((format!("Theme: {}", self.theme.name), Instant::now()));
     }
 
     fn toggle_exclude_empty(&mut self) {
@@ -393,7 +404,11 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                     app.mode = Mode::Search;
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.next_page();
+                    let page = app.table_height.saturating_sub(2);
+                    let max = app.rows.len().saturating_sub(1);
+                    app.selected = (app.selected + page).min(max);
+                    app.scroll_offset = (app.scroll_offset + page).min(max);
+                    app.preview_scroll = 0;
                 }
                 KeyCode::Char('f') => {
                     app.enter_filter_mode();
@@ -439,7 +454,10 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 }
                 KeyCode::Char('n') => app.next_page(),
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.prev_page();
+                    let page = app.table_height.saturating_sub(2);
+                    app.selected = app.selected.saturating_sub(page);
+                    app.scroll_offset = app.scroll_offset.saturating_sub(page);
+                    app.preview_scroll = 0;
                 }
                 KeyCode::Char('p') => app.prev_page(),
                 KeyCode::Tab => {
@@ -466,6 +484,9 @@ pub fn run(file: PathBuf, columns: Vec<String>) -> Result<()> {
                 KeyCode::Char('v') => {
                     app.column_picker_idx = 0;
                     app.mode = Mode::Columns;
+                }
+                KeyCode::Char('t') => {
+                    app.cycle_theme();
                 }
                 _ => {}
             },

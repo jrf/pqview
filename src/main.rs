@@ -1,6 +1,7 @@
 mod app;
 mod render;
 mod search;
+mod theme;
 
 use anyhow::Result;
 use clap::Parser;
