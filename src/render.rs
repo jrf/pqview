@@ -18,6 +18,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    if app.mode == Mode::FilePicker {
+        draw_with_popup(f, app, area, DrawPopup::FilePicker);
+        return;
+    }
+
     let mut constraints = vec![
         Constraint::Length(3), // filter bar
         Constraint::Length(3), // search bar
@@ -50,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 enum DrawPopup {
     Filter,
     Columns,
+    FilePicker,
 }
 
 fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
@@ -80,21 +86,124 @@ fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
     match popup {
         DrawPopup::Filter => draw_filter_popup(f, app, area),
         DrawPopup::Columns => draw_columns_popup(f, app, area),
+        DrawPopup::FilePicker => draw_file_picker_popup(f, app, area),
     }
 }
 
-fn draw_filter_popup(f: &mut Frame, app: &App, area: Rect) {
+fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = &app.theme;
+    let popup_area = centered_rect(70, 70, area);
+    f.render_widget(Clear, popup_area);
+
+    let bottom = format!(
+        " {}/{} | Enter open | Esc {} ",
+        app.picker_matches.len(),
+        app.picker_strs.len(),
+        if app.file.is_some() { "cancel" } else { "quit" },
+    );
+
+    let title = format!(" Open Parquet File — {} ", app.picker_root.display());
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(t.accent).bold())
+        .title_bottom(bottom)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    let prompt_prefix = Span::styled("> ", Style::default().fg(t.accent).bold());
+    let query_span = Span::styled(&app.picker_query, Style::default().fg(t.text));
+    let prompt = Paragraph::new(Line::from(vec![prompt_prefix, query_span]));
+    f.render_widget(prompt, chunks[0]);
+
+    f.set_cursor_position((
+        chunks[0].x + 2 + app.picker_cursor as u16,
+        chunks[0].y,
+    ));
+
+    let divider = "─".repeat(chunks[1].width as usize);
+    f.render_widget(
+        Paragraph::new(Span::styled(divider, Style::default().fg(t.border))),
+        chunks[1],
+    );
+
+    if app.picker_strs.is_empty() {
+        let msg = Paragraph::new(format!(
+            "No .parquet files found under {}",
+            app.picker_root.display()
+        ))
+        .style(Style::default().fg(t.text_muted))
+        .alignment(Alignment::Center);
+        f.render_widget(msg, chunks[2]);
+        return;
+    }
+
+    let visible_height = chunks[2].height as usize;
+    app.popup_visible_height = visible_height;
+    let scroll = if app.picker_idx >= visible_height {
+        app.picker_idx - visible_height + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = app
+        .picker_matches
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(i, &cand_idx)| {
+            let s = &app.picker_strs[cand_idx];
+            let is_cursor = i == app.picker_idx;
+            let style = if is_cursor {
+                Style::default().fg(t.accent).bg(t.surface_focused).bold()
+            } else {
+                Style::default().fg(t.text)
+            };
+            ListItem::new(s.as_str()).style(style)
+        })
+        .collect();
+
+    f.render_widget(List::new(items), chunks[2]);
+}
+
+fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let col_name = &app.columns[app.filter_column];
     let popup_area = centered_rect(50, 70, area);
     f.render_widget(Clear, popup_area);
 
+    let total = app.filter_suggestions.len();
+    let shown = app.popup_matches.len();
     let selected_count = app.filter_selected.len();
-    let bottom = if selected_count > 0 {
-        format!(" {} selected | Space toggle | Esc close ", selected_count)
+    let count_part = if app.popup_query.is_empty() {
+        format!("{}", total)
     } else {
-        " Space toggle | Esc close ".to_string()
+        format!("{}/{}", shown, total)
     };
+    let sel_part = if selected_count > 0 {
+        format!(" {} selected |", selected_count)
+    } else {
+        String::new()
+    };
+    let nav_part = if app.popup_searching {
+        " ↑↓ nav | Enter toggle | Esc nav "
+    } else {
+        " j/k nav | Space toggle | / search | Esc close "
+    };
+    let bottom = format!(" {} |{}{}", count_part, sel_part, nav_part);
 
     let block = Block::default()
         .title(format!(" Filter: {} ", col_name))
@@ -106,18 +215,30 @@ fn draw_filter_popup(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup_area);
     f.render_widget(block, popup_area);
 
+    let list_area = draw_popup_query_row(f, app, inner, t.accent_filter);
+    app.popup_visible_height = list_area.height as usize;
+
     if app.filter_suggestions.is_empty() {
         let msg = Paragraph::new("No values found")
             .style(Style::default().fg(t.text_muted))
             .alignment(Alignment::Center);
-        f.render_widget(msg, inner);
+        f.render_widget(msg, list_area);
+        return;
+    }
+
+    if app.popup_matches.is_empty() {
+        let msg = Paragraph::new("No matches")
+            .style(Style::default().fg(t.text_muted))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, list_area);
         return;
     }
 
     draw_checklist(
         f,
-        inner,
+        list_area,
         &app.filter_suggestions,
+        &app.popup_matches,
         &app.filter_selected,
         app.filter_cursor_idx,
         t.accent_filter,
@@ -125,17 +246,29 @@ fn draw_filter_popup(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_columns_popup(f: &mut Frame, app: &App, area: Rect) {
+fn draw_columns_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let popup_area = centered_rect(50, 70, area);
     f.render_widget(Clear, popup_area);
 
     let visible_count = app.visible_columns.len();
-    let bottom = format!(
-        " {}/{} shown | Space toggle | a all | d none | Esc close ",
-        visible_count,
-        app.columns.len()
-    );
+    let shown = app.popup_matches.len();
+    let count_part = if app.popup_query.is_empty() {
+        format!("{}/{} shown", visible_count, app.columns.len())
+    } else {
+        format!(
+            "{}/{} shown | {} match",
+            visible_count,
+            app.columns.len(),
+            shown
+        )
+    };
+    let nav_part = if app.popup_searching {
+        " ↑↓ nav | Enter toggle | ^A all | ^D none | Esc nav "
+    } else {
+        " j/k nav | Space toggle | a all | d none | / search | Esc close "
+    };
+    let bottom = format!(" {} |{}", count_part, nav_part);
 
     let block = Block::default()
         .title(" Columns ")
@@ -147,10 +280,22 @@ fn draw_columns_popup(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup_area);
     f.render_widget(block, popup_area);
 
+    let list_area = draw_popup_query_row(f, app, inner, t.accent);
+    app.popup_visible_height = list_area.height as usize;
+
+    if app.popup_matches.is_empty() && !app.columns.is_empty() {
+        let msg = Paragraph::new("No matches")
+            .style(Style::default().fg(t.text_muted))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, list_area);
+        return;
+    }
+
     draw_checklist(
         f,
-        inner,
+        list_area,
         &app.columns,
+        &app.popup_matches,
         &app.visible_columns,
         app.column_picker_idx,
         t.accent,
@@ -162,26 +307,31 @@ fn draw_checklist(
     f: &mut Frame,
     area: Rect,
     items: &[String],
+    matches: &[usize],
     selected: &HashSet<String>,
     cursor: usize,
     active_color: Color,
     t: &Theme,
 ) {
     let visible_height = area.height as usize;
+    if visible_height == 0 {
+        return;
+    }
     let scroll = if cursor >= visible_height {
         cursor - visible_height + 1
     } else {
         0
     };
 
-    let list_items: Vec<ListItem> = items
+    let list_items: Vec<ListItem> = matches
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_height)
-        .map(|(i, val)| {
+        .filter_map(|(visible_idx, &src_idx)| {
+            let val = items.get(src_idx)?;
             let is_selected = selected.contains(val);
-            let is_cursor = i == cursor;
+            let is_cursor = visible_idx == cursor;
 
             let checkbox = if is_selected { "[x] " } else { "[ ] " };
             let text = format!("{}{}", checkbox, val);
@@ -202,11 +352,48 @@ fn draw_checklist(
                 Style::default().fg(t.text_muted)
             };
 
-            ListItem::new(text).style(style)
+            Some(ListItem::new(text).style(style))
         })
         .collect();
 
     f.render_widget(List::new(list_items), area);
+}
+
+fn draw_popup_query_row(f: &mut Frame, app: &App, area: Rect, active_color: Color) -> Rect {
+    let t = &app.theme;
+    let show_row = app.popup_searching || !app.popup_query.is_empty();
+    if !show_row || area.height < 3 {
+        return area;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    let prefix_color = if app.popup_searching { active_color } else { t.text_muted };
+    let prompt_prefix = Span::styled("/ ", Style::default().fg(prefix_color).bold());
+    let query_color = if app.popup_searching { t.text } else { t.text_muted };
+    let query_span = Span::styled(&app.popup_query, Style::default().fg(query_color));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![prompt_prefix, query_span])),
+        chunks[0],
+    );
+
+    if app.popup_searching {
+        f.set_cursor_position((
+            chunks[0].x + 2 + app.popup_query_cursor as u16,
+            chunks[0].y,
+        ));
+    }
+
+    let divider = "─".repeat(chunks[1].width as usize);
+    f.render_widget(
+        Paragraph::new(Span::styled(divider, Style::default().fg(t.border))),
+        chunks[1],
+    );
+
+    chunks[2]
 }
 
 fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -498,7 +685,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(table, area);
 
     let help =
-        " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | t theme | n/p page | Tab preview | C clear | q quit ";
+        " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | o open | t theme | n/p page | Tab preview | C clear | q quit ";
     let help_span = Span::styled(help, Style::default().fg(t.text_muted));
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {

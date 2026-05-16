@@ -4,14 +4,14 @@
 
 ## Next
 
-- [ ] Fuzzy matching in filter suggestion popup (nucleo) #feature
-
 ## Later
 
 ## Scrapped
 
 ## Done
 
+- [x] Fuzzy search in Filter values and Columns popups (modal `/`) #feature
+- [x] Optional file arg + fuzzy file picker (nucleo) #feature
 - [x] Column visibility select/deselect all #feature
 - [x] Exclude nulls/empties per column #feature
 - [x] Ctrl+F/B page navigation #feature

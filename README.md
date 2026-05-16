@@ -20,8 +20,10 @@ cp target/release/pqview ~/.cargo/bin/
 ## Usage
 
 ```
-pqview <file.parquet>
+pqview [file.parquet]
 ```
+
+If no file is given, the app opens a fuzzy file picker rooted at the current directory (recursive, depth 6, skips hidden / `target` / `node_modules`).
 
 ## Keybindings
 
@@ -33,12 +35,26 @@ pqview <file.parquet>
 | `j` / `k` | Navigate rows |
 | `f` | Open filter for focused column |
 | `/` or `s` | Search focused column |
+| `o` | Open another Parquet file (fuzzy picker) |
 | `n` / `p` | Next / previous page |
 | `Enter` | Set preview to focused column |
 | `J` / `K` | Scroll preview pane |
 | `Tab` | Toggle preview pane |
 | `C` | Clear all filters and search |
 | `q` / `Esc` | Quit |
+
+### File picker
+
+Powered by [nucleo](https://crates.io/crates/nucleo-matcher).
+
+| Key | Action |
+|-----|--------|
+| Type | Fuzzy-filter candidates |
+| `Up` / `Down` (or `Ctrl+P` / `Ctrl+N`) | Move selection |
+| `Ctrl+F` / `Ctrl+B` | Page down / up |
+| `Enter` | Open file |
+| `Ctrl+U` | Clear query |
+| `Esc` | Cancel (or quit if no file loaded yet) |
 
 ### Filter mode
 
@@ -47,8 +63,26 @@ Filters subset the data by exact value (e.g. filter by gender, department). Mult
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate values |
+| `Ctrl+F` / `Ctrl+B` | Page down / up |
 | `Space` / `Enter` | Toggle value (takes effect immediately) |
+| `/` | Start fuzzy search across values |
+| `Ctrl+U` | Clear fuzzy query |
 | `Esc` / `f` | Close filter |
+
+Inside fuzzy search: type to filter (nucleo-ranked), `↑` / `↓` (or `Ctrl+P` / `Ctrl+N`) to navigate, `Enter` or `Tab` to toggle, `Esc` returns to nav (keeping the filtered view).
+
+### Columns mode
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate |
+| `Ctrl+F` / `Ctrl+B` | Page down / up |
+| `Space` / `Enter` | Toggle column visibility |
+| `a` / `d` | Show all / hide all (within current matches) |
+| `/` | Start fuzzy search across columns |
+| `Esc` / `v` | Close |
+
+Inside fuzzy search: typing filters the list; `Ctrl+A` / `Ctrl+D` show/hide all *visible* matches (so you can fuzz "id" and bulk-toggle); other bindings mirror filter mode.
 
 ### Search mode
 

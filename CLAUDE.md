@@ -18,8 +18,8 @@ Binary name is `pqview`. Usage: `pqview <file.parquet>`
 
 Three-module Rust TUI for exploring large Parquet files without loading them into memory.
 
-- **main.rs** — CLI entry point. Reads the Parquet schema, passes all column names to `app::run`.
-- **app.rs** — Application state (`App` struct) and the event loop. Four modes: `Browse`, `Search`, `Filter`, `Columns`. Handles all keybindings and manages background query lifecycle.
+- **main.rs** — CLI entry point. Parses an optional file path and hands it to `app::run`; if no file is given the app starts in the file picker.
+- **app.rs** — Application state (`App` struct) and the event loop. Six modes: `Browse`, `Search`, `Filter`, `Columns`, `Export`, `FilePicker`. Handles all keybindings and manages background query lifecycle. The file picker walks the cwd (depth 6) and ranks `.parquet` paths with `nucleo-matcher`.
 - **search.rs** — Polars query layer. All data access goes through `LazyFrame::scan_parquet` so filters and searches are pushed down before scanning. Two main entry points: `query()` for paginated filtered/searched results, `unique_values()` for filter suggestion lists.
 - **render.rs** — Ratatui rendering. Draws filter bar, search bar, results table, preview pane, and popup overlays (filter checklist, column picker). Takes `&mut App` to write back `table_height` for scroll calculations.
 
@@ -29,7 +29,8 @@ Three-module Rust TUI for exploring large Parquet files without loading them int
 - **Pagination**: 200 rows per page (`PAGE_SIZE`). Offset-based via Polars `slice()`.
 - **Filter vs Search**: Filters are exact-value multi-select per column (`is_in`), applied immediately on toggle. Search is case-insensitive substring match (`str().contains()`) on a single column, applied on Enter. They compose: search runs within filtered results.
 - **Column visibility**: `visible_columns: HashSet<String>` controls which columns appear in the filter bar and results table. `filter_column` indexes into the full `app.columns` list but h/l navigation skips hidden columns.
-- **Popup reuse**: `draw_checklist()` is a generic checklist renderer shared by both the Filter and Columns popups.
+- **Popup reuse**: `draw_checklist()` is a generic checklist renderer shared by both the Filter and Columns popups. It takes `matches: &[usize]` so the same widget renders fuzzy-filtered subsets.
+- **Popup fuzzy search**: Filter and Columns popups share a single piece of state (`popup_query`, `popup_searching`, `popup_matches`) and use the `rank_against` helper backed by `nucleo-matcher`. Entered with `/` (modal — `j`/`k` still nav until `/` is pressed). `popup_matches` indices point into the source list (`filter_suggestions` or `columns`), and the popup cursors (`filter_cursor_idx`, `column_picker_idx`) index into `popup_matches`, not the source.
 
 ### Polars specifics
 
