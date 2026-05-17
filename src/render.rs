@@ -594,8 +594,11 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
+    let col_count = app.display_columns().len();
+    let title = format!(" Results ({} x {}) ", app.total_matches, col_count);
+
     let block = Block::default()
-        .title(" Results ")
+        .title(title)
         .title_style(Style::default().fg(t.accent))
         .title_bottom(status)
         .borders(Borders::ALL)

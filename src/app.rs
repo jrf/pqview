@@ -797,6 +797,18 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Char('K') => {
                     app.preview_scroll = app.preview_scroll.saturating_sub(1);
                 }
+                KeyCode::Char('g') => {
+                    app.selected = 0;
+                    app.scroll_offset = 0;
+                    app.preview_scroll = 0;
+                }
+                KeyCode::Char('G') => {
+                    let max = app.rows.len().saturating_sub(1);
+                    app.selected = max;
+                    let visible = app.table_height.saturating_sub(1);
+                    app.scroll_offset = max.saturating_sub(visible);
+                    app.preview_scroll = 0;
+                }
                 KeyCode::Char('x') => {
                     app.toggle_exclude_empty();
                 }
