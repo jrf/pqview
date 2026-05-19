@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const PAGE_SIZE: u32 = 200;
+const PAGE_SIZE: u32 = 1000;
 const PICKER_MAX_DEPTH: usize = 6;
 
 #[derive(Clone, PartialEq)]
@@ -292,6 +292,16 @@ impl App {
                     if self.selected >= self.rows.len() && !self.rows.is_empty() {
                         self.selected = self.rows.len() - 1;
                     }
+                    let visible = self.table_height.saturating_sub(1);
+                    if visible > 0 && !self.rows.is_empty() {
+                        if self.selected >= self.scroll_offset + visible {
+                            self.scroll_offset = self.selected + 1 - visible;
+                        } else if self.selected < self.scroll_offset {
+                            self.scroll_offset = self.selected;
+                        }
+                    } else {
+                        self.scroll_offset = 0;
+                    }
                 }
                 Ok(Err(e)) => {
                     self.flash = Some((format!("Query error: {}", e), Instant::now()));
@@ -307,21 +317,75 @@ impl App {
         }
     }
 
+    fn has_next_page(&self) -> bool {
+        (self.offset + PAGE_SIZE) < self.total_matches as u32
+    }
+
+    fn has_prev_page(&self) -> bool {
+        self.offset >= PAGE_SIZE
+    }
+
     fn next_page(&mut self) {
-        if (self.offset + PAGE_SIZE) < self.total_matches as u32 {
+        if self.has_next_page() {
             self.offset += PAGE_SIZE;
             self.selected = 0;
             self.scroll_offset = 0;
+            self.preview_scroll = 0;
             self.execute_query();
         }
     }
 
     fn prev_page(&mut self) {
-        if self.offset >= PAGE_SIZE {
+        if self.has_prev_page() {
             self.offset -= PAGE_SIZE;
             self.selected = 0;
             self.scroll_offset = 0;
+            self.preview_scroll = 0;
             self.execute_query();
+        }
+    }
+
+    fn prev_page_to_bottom(&mut self) {
+        if self.has_prev_page() {
+            self.offset -= PAGE_SIZE;
+            self.selected = usize::MAX; // clamped after query loads
+            self.preview_scroll = 0;
+            self.execute_query();
+        }
+    }
+
+    fn goto_first(&mut self) {
+        self.preview_scroll = 0;
+        if self.offset != 0 {
+            self.offset = 0;
+            self.selected = 0;
+            self.scroll_offset = 0;
+            self.execute_query();
+        } else {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        }
+    }
+
+    fn goto_last(&mut self) {
+        if self.total_matches == 0 {
+            return;
+        }
+        let total = self.total_matches as u32;
+        let last_page_offset = ((total - 1) / PAGE_SIZE) * PAGE_SIZE;
+        self.preview_scroll = 0;
+        if last_page_offset != self.offset {
+            self.offset = last_page_offset;
+            self.selected = usize::MAX; // clamped after query loads
+            self.execute_query();
+        } else if !self.rows.is_empty() {
+            self.selected = self.rows.len() - 1;
+            let visible = self.table_height.saturating_sub(1);
+            self.scroll_offset = if visible > 0 && self.selected >= visible {
+                self.selected + 1 - visible
+            } else {
+                0
+            };
         }
     }
 
@@ -725,9 +789,13 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let page = app.table_height.saturating_sub(2);
                     let max = app.rows.len().saturating_sub(1);
-                    app.selected = (app.selected + page).min(max);
-                    app.scroll_offset = (app.scroll_offset + page).min(max);
-                    app.preview_scroll = 0;
+                    if app.selected < max {
+                        app.selected = (app.selected + page).min(max);
+                        app.scroll_offset = (app.scroll_offset + page).min(max);
+                        app.preview_scroll = 0;
+                    } else if app.has_next_page() {
+                        app.next_page();
+                    }
                 }
                 KeyCode::Char('f') => {
                     app.enter_filter_mode();
@@ -739,6 +807,8 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                         if app.selected < app.scroll_offset {
                             app.scroll_offset = app.selected;
                         }
+                    } else if app.has_prev_page() {
+                        app.prev_page_to_bottom();
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -749,6 +819,8 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                         if visible > 0 && app.selected >= app.scroll_offset + visible {
                             app.scroll_offset = app.selected - visible + 1;
                         }
+                    } else if app.has_next_page() {
+                        app.next_page();
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -777,9 +849,13 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Char('n') => app.next_page(),
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let page = app.table_height.saturating_sub(2);
-                    app.selected = app.selected.saturating_sub(page);
-                    app.scroll_offset = app.scroll_offset.saturating_sub(page);
-                    app.preview_scroll = 0;
+                    if app.selected > 0 {
+                        app.selected = app.selected.saturating_sub(page);
+                        app.scroll_offset = app.scroll_offset.saturating_sub(page);
+                        app.preview_scroll = 0;
+                    } else if app.has_prev_page() {
+                        app.prev_page_to_bottom();
+                    }
                 }
                 KeyCode::Char('p') => app.prev_page(),
                 KeyCode::Tab => {
@@ -797,18 +873,8 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Char('K') => {
                     app.preview_scroll = app.preview_scroll.saturating_sub(1);
                 }
-                KeyCode::Char('g') => {
-                    app.selected = 0;
-                    app.scroll_offset = 0;
-                    app.preview_scroll = 0;
-                }
-                KeyCode::Char('G') => {
-                    let max = app.rows.len().saturating_sub(1);
-                    app.selected = max;
-                    let visible = app.table_height.saturating_sub(1);
-                    app.scroll_offset = max.saturating_sub(visible);
-                    app.preview_scroll = 0;
-                }
+                KeyCode::Char('g') => app.goto_first(),
+                KeyCode::Char('G') => app.goto_last(),
                 KeyCode::Char('x') => {
                     app.toggle_exclude_empty();
                 }
