@@ -1,11 +1,19 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use polars::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+#[derive(Clone, Default)]
+pub struct SearchCriteria {
+    pub filters: HashMap<String, Vec<String>>,
+    pub exclude_empty: HashSet<String>,
+    pub column: Option<String>,
+    pub text: String,
+}
+
 pub fn read_schema(path: &Path) -> Result<Schema> {
-    let mut lf = LazyFrame::scan_parquet(path, Default::default())?;
-    let schema = lf.collect_schema()?;
+    let mut frame = LazyFrame::scan_parquet(path, Default::default())?;
+    let schema = frame.collect_schema()?;
     Ok(schema.as_ref().clone())
 }
 
@@ -16,70 +24,25 @@ pub struct SearchResult {
 
 pub fn query(
     path: &Path,
-    filters: &HashMap<String, Vec<String>>,
-    exclude_empty: &HashSet<String>,
-    search_column: Option<&str>,
-    search_text: &str,
+    criteria: &SearchCriteria,
     display_columns: &[String],
     limit: u32,
     offset: u32,
 ) -> Result<SearchResult> {
-    let lf = LazyFrame::scan_parquet(path, Default::default())?;
-
-    let mut filtered = lf;
-
-    for (column, values) in filters {
-        if values.is_empty() {
-            continue;
-        }
-        let lower_vals: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
-        let series = Series::new("".into(), &lower_vals);
-        filtered = filtered.filter(
-            col(column)
-                .cast(DataType::String)
-                .str()
-                .to_lowercase()
-                .is_in(lit(series)),
-        );
+    if display_columns.is_empty() {
+        bail!("At least one column must be visible");
     }
 
-    for column in exclude_empty {
-        filtered = filtered.filter(
-            col(column)
-                .is_not_null()
-                .and(col(column).cast(DataType::String).neq(lit(""))),
-        );
-    }
-
-    if let Some(search_col) = search_column {
-        if !search_text.is_empty() {
-            let pattern = format!("(?i){}", regex_escape(search_text));
-            filtered = filtered.filter(
-                col(search_col)
-                    .cast(DataType::String)
-                    .str()
-                    .contains(lit(pattern), false),
-            );
-        }
-    }
-
-    let count_df = filtered
-        .clone()
-        .select([len().alias("count")])
+    let filtered = filtered_scan(path, criteria)?;
+    let total_matches = count_matches(filtered.clone())?;
+    let select_columns = display_columns.iter().map(col).collect::<Vec<_>>();
+    let result = filtered
+        .select(select_columns)
+        .slice(i64::from(offset), limit)
         .collect()?;
-    let total_matches = count_df.column("count")?.u32()?.get(0).unwrap_or(0) as usize;
-
-    let select_cols: Vec<Expr> = display_columns.iter().map(|c| col(c)).collect();
-
-    let result_df = filtered
-        .select(select_cols)
-        .slice(offset as i64, limit)
-        .collect()?;
-
-    let rows = dataframe_to_strings(&result_df, display_columns);
 
     Ok(SearchResult {
-        rows,
+        rows: dataframe_to_strings(&result, display_columns),
         total_matches,
     })
 }
@@ -87,58 +50,28 @@ pub fn query(
 pub fn export(
     path: &Path,
     output: &Path,
-    filters: &HashMap<String, Vec<String>>,
-    exclude_empty: &HashSet<String>,
-    search_column: Option<&str>,
-    search_text: &str,
+    criteria: &SearchCriteria,
     columns: &[String],
 ) -> Result<usize> {
-    let lf = LazyFrame::scan_parquet(path, Default::default())?;
-    let mut filtered = lf;
-
-    for (column, values) in filters {
-        if values.is_empty() {
-            continue;
-        }
-        let lower_vals: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
-        let series = Series::new("".into(), &lower_vals);
-        filtered = filtered.filter(
-            col(column)
-                .cast(DataType::String)
-                .str()
-                .to_lowercase()
-                .is_in(lit(series)),
-        );
+    if columns.is_empty() {
+        bail!("At least one column must be visible");
+    }
+    if output.exists() {
+        bail!("Export path already exists: {}", output.display());
     }
 
-    for column in exclude_empty {
-        filtered = filtered.filter(
-            col(column)
-                .is_not_null()
-                .and(col(column).cast(DataType::String).neq(lit(""))),
-        );
-    }
-
-    if let Some(search_col) = search_column {
-        if !search_text.is_empty() {
-            let pattern = format!("(?i){}", regex_escape(search_text));
-            filtered = filtered.filter(
-                col(search_col)
-                    .cast(DataType::String)
-                    .str()
-                    .contains(lit(pattern), false),
-            );
-        }
-    }
-
-    let select_cols: Vec<Expr> = columns.iter().map(|c| col(c)).collect();
-    let mut df = filtered.select(select_cols).collect()?;
-    let count = df.height();
-
-    use polars::prelude::ParquetWriter;
-    let file = std::fs::File::create(output)?;
-    ParquetWriter::new(file).finish(&mut df)?;
-
+    let filtered = filtered_scan(path, criteria)?;
+    let count = count_matches(filtered.clone())?;
+    let select_columns = columns.iter().map(col).collect::<Vec<_>>();
+    let output_directory = output.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = tempfile::Builder::new()
+        .prefix(".pqview-export-")
+        .suffix(".parquet")
+        .tempfile_in(output_directory)?;
+    filtered
+        .select(select_columns)
+        .sink_parquet(&temporary.path(), Default::default(), None)?;
+    temporary.persist_noclobber(output)?;
     Ok(count)
 }
 
@@ -148,17 +81,42 @@ pub fn unique_values(
     other_filters: &HashMap<String, Vec<String>>,
     limit: u32,
 ) -> Result<Vec<String>> {
-    let lf = LazyFrame::scan_parquet(path, Default::default())?;
+    let criteria = SearchCriteria {
+        filters: other_filters.clone(),
+        ..Default::default()
+    };
+    let frame = filtered_scan(path, &criteria)?
+        .select([col(column).cast(DataType::String)])
+        .unique(None, UniqueKeepStrategy::First)
+        .sort([column], Default::default())
+        .limit(limit)
+        .collect()?;
 
-    let mut filtered = lf;
-    for (col_name, values) in other_filters {
-        if values.is_empty() || col_name == column {
+    let series = frame.column(column)?;
+    let mut values = Vec::with_capacity(series.len());
+    for index in 0..series.len() {
+        let value = any_value_to_string(series.get(index)?);
+        if !value.is_empty() {
+            values.push(value);
+        }
+    }
+    Ok(values)
+}
+
+fn filtered_scan(path: &Path, criteria: &SearchCriteria) -> Result<LazyFrame> {
+    let mut filtered = LazyFrame::scan_parquet(path, Default::default())?;
+
+    for (column, values) in &criteria.filters {
+        if values.is_empty() {
             continue;
         }
-        let lower_vals: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
-        let series = Series::new("".into(), &lower_vals);
+        let lowercase_values = values
+            .iter()
+            .map(|value| value.to_lowercase())
+            .collect::<Vec<_>>();
+        let series = Series::new("".into(), &lowercase_values);
         filtered = filtered.filter(
-            col(col_name)
+            col(column)
                 .cast(DataType::String)
                 .str()
                 .to_lowercase()
@@ -166,63 +124,70 @@ pub fn unique_values(
         );
     }
 
-    let df = filtered
-        .select([col(column).cast(DataType::String)])
-        .unique(None, UniqueKeepStrategy::First)
-        .sort([column], Default::default())
-        .limit(limit)
-        .collect()?;
-
-    let mut values = Vec::new();
-    let series = df.column(column)?;
-    for i in 0..series.len() {
-        let v = series.get(i)?;
-        let s = format!("{}", v);
-        let s = s.strip_prefix('"').unwrap_or(&s);
-        let s = s.strip_suffix('"').unwrap_or(s);
-        if !s.is_empty() && s != "null" {
-            values.push(s.to_string());
-        }
+    for column in &criteria.exclude_empty {
+        filtered = filtered.filter(
+            col(column)
+                .is_not_null()
+                .and(col(column).cast(DataType::String).neq(lit(""))),
+        );
     }
 
-    Ok(values)
+    if let Some(column) = &criteria.column
+        && !criteria.text.is_empty()
+    {
+        let pattern = format!("(?i){}", regex_escape(&criteria.text));
+        filtered = filtered.filter(
+            col(column)
+                .cast(DataType::String)
+                .str()
+                .contains(lit(pattern), false),
+        );
+    }
+
+    Ok(filtered)
 }
 
-fn dataframe_to_strings(df: &DataFrame, columns: &[String]) -> Vec<Vec<String>> {
-    let height = df.height();
-    let mut rows = Vec::with_capacity(height);
+fn count_matches(filtered: LazyFrame) -> Result<usize> {
+    let frame = filtered.select([len().alias("count")]).collect()?;
+    Ok(frame.column("count")?.u32()?.get(0).unwrap_or(0) as usize)
+}
 
-    for i in 0..height {
-        let mut row = Vec::with_capacity(columns.len());
-        for col_name in columns {
-            let val = df
-                .column(col_name)
-                .ok()
-                .and_then(|s| {
-                    let v = s.get(i).ok()?;
-                    Some(format!("{}", v))
+fn dataframe_to_strings(frame: &DataFrame, columns: &[String]) -> Vec<Vec<String>> {
+    (0..frame.height())
+        .map(|row_index| {
+            columns
+                .iter()
+                .map(|column| {
+                    frame
+                        .column(column)
+                        .ok()
+                        .and_then(|series| series.get(row_index).ok())
+                        .map(any_value_to_string)
+                        .unwrap_or_default()
                 })
-                .unwrap_or_default();
-            let val = val.strip_prefix('"').unwrap_or(&val);
-            let val = val.strip_suffix('"').unwrap_or(val);
-            row.push(val.to_string());
-        }
-        rows.push(row);
-    }
-
-    rows
+                .collect()
+        })
+        .collect()
 }
 
-fn regex_escape(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^'
-            | '$' => {
+fn any_value_to_string(value: AnyValue<'_>) -> String {
+    match value {
+        AnyValue::Null => String::new(),
+        AnyValue::String(value) => value.to_owned(),
+        AnyValue::StringOwned(value) => value.as_str().to_owned(),
+        value => value.to_string(),
+    }
+}
+
+fn regex_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' => {
                 escaped.push('\\');
-                escaped.push(c);
+                escaped.push(character);
             }
-            _ => escaped.push(c),
+            _ => escaped.push(character),
         }
     }
     escaped
@@ -231,105 +196,152 @@ fn regex_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
 
-    fn test_file() -> PathBuf {
-        PathBuf::from("/tmp/test_notes.parquet")
+    fn synthetic_file() -> NamedTempFile {
+        let file = NamedTempFile::with_suffix("_pqview_synthetic.parquet").unwrap();
+        let record_ids = (0..100_i64).collect::<Vec<_>>();
+        let descriptions = (0..100)
+            .map(|index| {
+                if index % 2 == 0 {
+                    "alpha synthetic item"
+                } else {
+                    "beta synthetic item"
+                }
+            })
+            .collect::<Vec<_>>();
+        let categories = (0..100)
+            .map(|index| if index % 3 == 0 { "Group A" } else { "Group B" })
+            .collect::<Vec<_>>();
+        let optional = (0..100)
+            .map(|index| (index % 4 != 0).then_some("present"))
+            .collect::<Vec<_>>();
+        let mut frame = df!(
+            "record_id" => record_ids,
+            "description" => descriptions,
+            "category" => categories,
+            "optional" => optional,
+        )
+        .unwrap();
+        ParquetWriter::new(file.reopen().unwrap())
+            .finish(&mut frame)
+            .unwrap();
+        file
     }
 
     #[test]
-    fn test_read_schema() {
-        let schema = read_schema(&test_file()).unwrap();
-        let names: Vec<&str> = schema.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"clinical_note"));
-        assert!(names.contains(&"patient_id"));
+    fn reads_schema() {
+        let file = synthetic_file();
+        let schema = read_schema(file.path()).unwrap();
+        let names = schema
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"description"));
+        assert!(names.contains(&"record_id"));
     }
 
     #[test]
-    fn test_browse_no_filters() {
-        let cols = vec!["patient_id".into(), "clinical_note".into()];
-        let result = query(&test_file(), &HashMap::new(), &HashSet::new(), None, "", &cols, 10, 0).unwrap();
+    fn browses_without_filters() {
+        let file = synthetic_file();
+        let columns = vec!["record_id".into(), "description".into()];
+        let result = query(file.path(), &SearchCriteria::default(), &columns, 10, 0).unwrap();
         assert_eq!(result.rows.len(), 10);
         assert_eq!(result.total_matches, 100);
     }
 
     #[test]
-    fn test_filter_single_value() {
-        let cols = vec!["patient_id".into(), "department".into()];
-        let mut filters = HashMap::new();
-        filters.insert("department".into(), vec!["Cardiology".into()]);
-        let result = query(&test_file(), &filters, &HashSet::new(), None, "", &cols, 50, 0).unwrap();
-        assert!(result.total_matches > 0);
-        for row in &result.rows {
-            assert_eq!(row[1].to_lowercase(), "cardiology");
-        }
+    fn filters_single_and_multiple_values() {
+        let file = synthetic_file();
+        let columns = vec!["record_id".into(), "category".into()];
+        let mut criteria = SearchCriteria::default();
+        criteria
+            .filters
+            .insert("category".into(), vec!["Group A".into()]);
+        let result = query(file.path(), &criteria, &columns, 100, 0).unwrap();
+        assert!(result.rows.iter().all(|row| row[1] == "Group A"));
+
+        criteria
+            .filters
+            .insert("category".into(), vec!["Group A".into(), "Group B".into()]);
+        let result = query(file.path(), &criteria, &columns, 100, 0).unwrap();
+        assert_eq!(result.total_matches, 100);
     }
 
     #[test]
-    fn test_filter_multi_value() {
-        let cols = vec!["patient_id".into(), "department".into()];
-        let mut filters = HashMap::new();
-        filters.insert(
-            "department".into(),
-            vec!["Cardiology".into(), "Emergency".into()],
+    fn searches_and_combines_filters() {
+        let file = synthetic_file();
+        let columns = vec!["record_id".into(), "description".into(), "category".into()];
+        let mut criteria = SearchCriteria {
+            column: Some("description".into()),
+            text: "alpha".into(),
+            ..Default::default()
+        };
+        criteria
+            .filters
+            .insert("category".into(), vec!["Group A".into()]);
+        let result = query(file.path(), &criteria, &columns, 100, 0).unwrap();
+        assert!(
+            result
+                .rows
+                .iter()
+                .all(|row| { row[1].contains("alpha") && row[2] == "Group A" })
         );
-        let result = query(&test_file(), &filters, &HashSet::new(), None, "", &cols, 50, 0).unwrap();
-        assert!(result.total_matches > 0);
-        for row in &result.rows {
-            let dept = row[1].to_lowercase();
-            assert!(dept == "cardiology" || dept == "emergency");
-        }
     }
 
     #[test]
-    fn test_search_substring() {
-        let cols = vec!["patient_id".into(), "clinical_note".into()];
-        let result = query(
-            &test_file(),
-            &HashMap::new(),
-            &HashSet::new(),
-            Some("clinical_note"),
-            "chest pain",
-            &cols,
-            50,
-            0,
+    fn excludes_null_values() {
+        let file = synthetic_file();
+        let columns = vec!["optional".into()];
+        let mut criteria = SearchCriteria::default();
+        criteria.exclude_empty.insert("optional".into());
+        let result = query(file.path(), &criteria, &columns, 100, 0).unwrap();
+        assert_eq!(result.total_matches, 75);
+        assert!(result.rows.iter().all(|row| row[0] == "present"));
+    }
+
+    #[test]
+    fn lists_unique_values() {
+        let file = synthetic_file();
+        let values = unique_values(file.path(), "category", &HashMap::new(), 100).unwrap();
+        assert_eq!(values, vec!["Group A", "Group B"]);
+    }
+
+    #[test]
+    fn exports_filtered_rows() {
+        let file = synthetic_file();
+        let output_directory = tempfile::tempdir().unwrap();
+        let output = output_directory
+            .path()
+            .join("pqview_synthetic_export.parquet");
+        let columns = vec!["record_id".into(), "category".into()];
+        let mut criteria = SearchCriteria::default();
+        criteria
+            .filters
+            .insert("category".into(), vec!["Group A".into()]);
+
+        let count = export(file.path(), &output, &criteria, &columns).unwrap();
+        let exported = LazyFrame::scan_parquet(&output, Default::default())
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(count, 34);
+        assert_eq!(exported.height(), count);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_export() {
+        let file = synthetic_file();
+        let output = NamedTempFile::with_suffix("_pqview_existing.parquet").unwrap();
+        let columns = vec!["record_id".into()];
+
+        let error = export(
+            file.path(),
+            output.path(),
+            &SearchCriteria::default(),
+            &columns,
         )
-        .unwrap();
-        assert!(result.total_matches > 0);
-        assert!(result.rows[0][1].to_lowercase().contains("chest pain"));
-    }
-
-    #[test]
-    fn test_filter_and_search_combined() {
-        let cols = vec![
-            "patient_id".into(),
-            "clinical_note".into(),
-            "department".into(),
-        ];
-        let mut filters = HashMap::new();
-        filters.insert("department".into(), vec!["Cardiology".into()]);
-        let result = query(
-            &test_file(),
-            &filters,
-            &HashSet::new(),
-            Some("clinical_note"),
-            "chest pain",
-            &cols,
-            50,
-            0,
-        )
-        .unwrap();
-        assert!(result.total_matches > 0);
-        for row in &result.rows {
-            assert_eq!(row[2].to_lowercase(), "cardiology");
-            assert!(row[1].to_lowercase().contains("chest pain"));
-        }
-    }
-
-    #[test]
-    fn test_unique_values() {
-        let values = unique_values(&test_file(), "department", &HashMap::new(), 100).unwrap();
-        assert!(values.contains(&"Cardiology".to_string()));
-        assert!(values.contains(&"Emergency".to_string()));
+        .unwrap_err();
+        assert!(error.to_string().contains("already exists"));
     }
 }

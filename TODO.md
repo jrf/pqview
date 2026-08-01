@@ -10,6 +10,8 @@
 
 ## Done
 
+- [x] Add self-contained synthetic tests and repository validation checks #chore
+- [x] Make text input, terminal cleanup, queries, and exports failure-safe #refactor
 - [x] Fuzzy search in Filter values and Columns popups (modal `/`) #feature
 - [x] Optional file arg + fuzzy file picker (nucleo) #feature
 - [x] Column visibility select/deselect all #feature

@@ -1,6 +1,10 @@
 mod app;
+mod background;
+mod input;
+mod picker;
 mod render;
 mod search;
+mod terminal_session;
 mod theme;
 
 use anyhow::Result;
@@ -8,7 +12,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "pqview", about = "Search through large Parquet files")]
+#[command(name = "pqview", version, about = "Search through large Parquet files")]
 struct Cli {
     /// Path to the Parquet file (optional — opens a file picker if omitted)
     file: Option<PathBuf>,
@@ -17,10 +21,10 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(path) = &cli.file {
-        if !path.exists() {
-            anyhow::bail!("File not found: {}", path.display());
-        }
+    if let Some(path) = &cli.file
+        && !path.exists()
+    {
+        anyhow::bail!("File not found: {}", path.display());
     }
 
     app::run(cli.file)

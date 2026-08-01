@@ -1,8 +1,8 @@
 # pqview
 
-A TUI for searching and filtering large Parquet files. Built for exploring text-heavy datasets without loading everything into memory.
+A TUI for searching and filtering large Parquet files. Built for exploring text-heavy datasets with paginated reads and streaming exports.
 
-Uses Polars lazy scanning to push filters and searches down to the Parquet reader, and it handles multi-GB files without breaking a sweat.
+Uses Polars lazy scanning to push filters and searches down to the Parquet reader.
 
 ## Install
 
@@ -37,9 +37,15 @@ If no file is given, the app opens a fuzzy file picker rooted at the current dir
 | `/` or `s` | Search focused column |
 | `o` | Open another Parquet file (fuzzy picker) |
 | `n` / `p` | Next / previous page |
+| `g` / `G` | First / last result |
+| `Ctrl+F` / `Ctrl+B` | Move by one visible page, crossing result pages |
 | `Enter` | Set preview to focused column |
 | `J` / `K` | Scroll preview pane |
 | `Tab` | Toggle preview pane |
+| `x` | Exclude null and empty values in the focused column |
+| `v` | Choose visible columns |
+| `w` | Export filtered rows to Parquet |
+| `t` | Cycle the color theme |
 | `C` | Clear all filters and search |
 | `q` / `Esc` | Quit |
 
@@ -96,9 +102,15 @@ Search does case-insensitive substring matching within the filtered results. Mat
 | `Ctrl+U` | Clear search text |
 | `Esc` | Cancel |
 
+### Export
+
+Press `w` in browse mode to edit the output path, then press `Enter`. Export runs in the background, writes only visible columns, and does not overwrite an existing file.
+
 ## Architecture
 
 - **Polars LazyFrame** for all data access -- filters and searches are pushed down before scanning
 - **Ratatui** + **crossterm** for the terminal interface
-- Background queries via `std::sync::mpsc` to keep the UI responsive
-- Pagination (200 rows per page) to avoid loading large result sets into memory
+- A coalescing background-query worker that discards stale results
+- Background filter-value discovery and streaming Parquet exports
+- Pagination (1,000 rows per page) to bound displayed result memory
+- Scope-based terminal cleanup that restores raw mode and the alternate screen on errors

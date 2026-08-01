@@ -1,4 +1,5 @@
 use crate::app::{App, Mode};
+use crate::input;
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -59,10 +60,7 @@ enum DrawPopup {
 }
 
 fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
-    let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Length(3),
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Length(3)];
     if app.show_preview {
         constraints.push(Constraint::Percentage(50));
         constraints.push(Constraint::Percentage(50));
@@ -120,7 +118,11 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
         .split(inner);
 
     let prompt_prefix = Span::styled("> ", Style::default().fg(t.accent).bold());
@@ -129,7 +131,7 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(prompt, chunks[0]);
 
     f.set_cursor_position((
-        chunks[0].x + 2 + app.picker_cursor as u16,
+        chunks[0].x + 2 + input::display_width(&app.picker_query, app.picker_cursor),
         chunks[0].y,
     ));
 
@@ -219,7 +221,12 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
     app.popup_visible_height = list_area.height as usize;
 
     if app.filter_suggestions.is_empty() {
-        let msg = Paragraph::new("No values found")
+        let message = if app.filter_values_loading {
+            "Loading values..."
+        } else {
+            "No values found"
+        };
+        let msg = Paragraph::new(message)
             .style(Style::default().fg(t.text_muted))
             .alignment(Alignment::Center);
         f.render_widget(msg, list_area);
@@ -241,8 +248,7 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
         &app.popup_matches,
         &app.filter_selected,
         app.filter_cursor_idx,
-        t.accent_filter,
-        t,
+        (t.accent_filter, t),
     );
 }
 
@@ -298,8 +304,7 @@ fn draw_columns_popup(f: &mut Frame, app: &mut App, area: Rect) {
         &app.popup_matches,
         &app.visible_columns,
         app.column_picker_idx,
-        t.accent,
-        t,
+        (t.accent, t),
     );
 }
 
@@ -310,9 +315,9 @@ fn draw_checklist(
     matches: &[usize],
     selected: &HashSet<String>,
     cursor: usize,
-    active_color: Color,
-    t: &Theme,
+    colors: (Color, &Theme),
 ) {
+    let (active_color, t) = colors;
     let visible_height = area.height as usize;
     if visible_height == 0 {
         return;
@@ -342,10 +347,7 @@ fn draw_checklist(
                     .bg(t.surface_focused)
                     .bold()
             } else if is_cursor {
-                Style::default()
-                    .fg(t.text)
-                    .bg(t.surface_focused)
-                    .bold()
+                Style::default().fg(t.text).bg(t.surface_focused).bold()
             } else if is_selected {
                 Style::default().fg(active_color)
             } else {
@@ -368,12 +370,24 @@ fn draw_popup_query_row(f: &mut Frame, app: &App, area: Rect, active_color: Colo
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
         .split(area);
 
-    let prefix_color = if app.popup_searching { active_color } else { t.text_muted };
+    let prefix_color = if app.popup_searching {
+        active_color
+    } else {
+        t.text_muted
+    };
     let prompt_prefix = Span::styled("/ ", Style::default().fg(prefix_color).bold());
-    let query_color = if app.popup_searching { t.text } else { t.text_muted };
+    let query_color = if app.popup_searching {
+        t.text
+    } else {
+        t.text_muted
+    };
     let query_span = Span::styled(&app.popup_query, Style::default().fg(query_color));
     f.render_widget(
         Paragraph::new(Line::from(vec![prompt_prefix, query_span])),
@@ -382,7 +396,7 @@ fn draw_popup_query_row(f: &mut Frame, app: &App, area: Rect, active_color: Colo
 
     if app.popup_searching {
         f.set_cursor_position((
-            chunks[0].x + 2 + app.popup_query_cursor as u16,
+            chunks[0].x + 2 + input::display_width(&app.popup_query, app.popup_query_cursor),
             chunks[0].y,
         ));
     }
@@ -444,8 +458,7 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         let all_idx = app.columns.iter().position(|c| c == col).unwrap_or(0);
         let filter_display = app.filter_display(col);
         let is_focused = all_idx == app.filter_column;
-        let is_search_col =
-            all_idx == app.search_column && !app.search_query.is_empty();
+        let is_search_col = all_idx == app.search_column && !app.search_query.is_empty();
         let is_excluding_empty = app.exclude_empty.contains(col);
 
         let display = match (&filter_display, is_excluding_empty) {
@@ -502,11 +515,13 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(if is_searching || !app.search_query.is_empty() {
-            t.accent_search
-        } else {
-            t.text_muted
-        }))
+        .title_style(
+            Style::default().fg(if is_searching || !app.search_query.is_empty() {
+                t.accent_search
+            } else {
+                t.text_muted
+            }),
+        )
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -520,7 +535,10 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 
     if is_searching {
-        f.set_cursor_position((area.x + 1 + app.search_cursor as u16, area.y + 1));
+        f.set_cursor_position((
+            area.x + 1 + input::display_width(&app.search_query, app.search_cursor),
+            area.y + 1,
+        ));
     }
 }
 
@@ -540,7 +558,10 @@ fn draw_export_bar(f: &mut Frame, app: &App, area: Rect) {
     let paragraph = Paragraph::new(Line::from(vec![input])).block(block);
     f.render_widget(paragraph, bar_area);
 
-    f.set_cursor_position((bar_area.x + 1 + app.export_cursor as u16, bar_area.y + 1));
+    f.set_cursor_position((
+        bar_area.x + 1 + input::display_width(&app.export_path, app.export_cursor),
+        bar_area.y + 1,
+    ));
 }
 
 fn filter_col_width(app: &App, col: &str) -> usize {
@@ -687,8 +708,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(table, area);
 
-    let help =
-        " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | o open | t theme | n/p page | Tab preview | C clear | q quit ";
+    let help = " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | o open | t theme | n/p page | Tab preview | C clear | q quit ";
     let help_span = Span::styled(help, Style::default().fg(t.text_muted));
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {
@@ -739,7 +759,9 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 

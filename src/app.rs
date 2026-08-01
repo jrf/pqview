@@ -1,16 +1,17 @@
+use crate::background::{QueryRequest, QueryResponse, QueryWorker};
+use crate::input;
+use crate::picker;
 use crate::render;
 use crate::search;
+use crate::terminal_session;
 use crate::theme::{self, Theme};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::ExecutableCommand;
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{Config, Matcher};
 use ratatui::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -85,10 +86,16 @@ pub struct App {
     pub show_preview: bool,
     pub table_height: usize,
     pub loading: bool,
+    pub filter_values_loading: bool,
     pub flash: Option<(String, Instant)>,
     pub theme: Theme,
     pub theme_idx: usize,
-    query_rx: Option<mpsc::Receiver<Result<search::SearchResult>>>,
+    query_worker: QueryWorker,
+    next_query_id: u64,
+    active_query_id: u64,
+    filter_suggestions_rx: Option<mpsc::Receiver<Result<Vec<String>>>>,
+    export_rx: Option<mpsc::Receiver<(PathBuf, Result<usize>)>>,
+    pub exporting: bool,
 }
 
 impl App {
@@ -136,10 +143,16 @@ impl App {
             show_preview: true,
             table_height: 0,
             loading: false,
+            filter_values_loading: false,
             flash: None,
             theme: theme::THEMES[0].clone(),
             theme_idx: 0,
-            query_rx: None,
+            query_worker: QueryWorker::new(PAGE_SIZE),
+            next_query_id: 0,
+            active_query_id: 0,
+            filter_suggestions_rx: None,
+            export_rx: None,
+            exporting: false,
         }
     }
 
@@ -226,7 +239,10 @@ impl App {
             self.filter_column = 0;
             return;
         }
-        if !self.visible_columns.contains(&self.columns[self.filter_column]) {
+        if !self
+            .visible_columns
+            .contains(&self.columns[self.filter_column])
+        {
             for (i, col) in self.columns.iter().enumerate() {
                 if self.visible_columns.contains(col) {
                     self.filter_column = i;
@@ -240,55 +256,39 @@ impl App {
         let Some(path) = self.file.clone() else {
             return;
         };
-        let filters: HashMap<String, Vec<String>> = self
-            .filters
-            .iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
         let columns = self.columns.clone();
         let offset = self.offset;
-        let search_col = self
-            .columns
-            .get(self.search_column)
-            .cloned()
-            .unwrap_or_default();
-        let search_text = self.search_query.clone();
-        let exclude_empty = self.exclude_empty.clone();
-
+        let criteria = self.search_criteria();
+        self.next_query_id = self.next_query_id.wrapping_add(1);
+        self.active_query_id = self.next_query_id;
         self.loading = true;
-
-        let (tx, rx) = mpsc::channel();
-        self.query_rx = Some(rx);
-
-        std::thread::spawn(move || {
-            let search = if search_text.is_empty() {
-                None
-            } else {
-                Some(search_col.as_str())
-            };
-            let result = search::query(
-                &path,
-                &filters,
-                &exclude_empty,
-                search,
-                &search_text,
-                &columns,
-                PAGE_SIZE,
+        if self
+            .query_worker
+            .requests
+            .send(QueryRequest {
+                id: self.active_query_id,
+                path,
+                criteria,
+                columns,
                 offset,
-            );
-            let _ = tx.send(result);
-        });
+            })
+            .is_err()
+        {
+            self.loading = false;
+            self.flash = Some(("Query worker stopped".into(), Instant::now()));
+        }
     }
 
     fn check_query_result(&mut self) {
-        if let Some(rx) = &self.query_rx {
-            match rx.try_recv() {
-                Ok(Ok(result)) => {
+        loop {
+            match self.query_worker.responses.try_recv() {
+                Ok(response) if response.id != self.active_query_id => continue,
+                Ok(QueryResponse {
+                    result: Ok(result), ..
+                }) => {
                     self.rows = result.rows;
                     self.total_matches = result.total_matches;
                     self.loading = false;
-                    self.query_rx = None;
                     if self.selected >= self.rows.len() && !self.rows.is_empty() {
                         self.selected = self.rows.len() - 1;
                     }
@@ -302,17 +302,88 @@ impl App {
                     } else {
                         self.scroll_offset = 0;
                     }
+                    break;
                 }
-                Ok(Err(e)) => {
-                    self.flash = Some((format!("Query error: {}", e), Instant::now()));
+                Ok(QueryResponse {
+                    result: Err(error), ..
+                }) => {
+                    self.flash = Some((format!("Query error: {error}"), Instant::now()));
                     self.loading = false;
-                    self.query_rx = None;
+                    break;
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.loading = false;
-                    self.query_rx = None;
+                    break;
                 }
+            }
+        }
+    }
+
+    fn search_criteria(&self) -> search::SearchCriteria {
+        search::SearchCriteria {
+            filters: self
+                .filters
+                .iter()
+                .filter(|(_, values)| !values.is_empty())
+                .map(|(column, values)| (column.clone(), values.clone()))
+                .collect(),
+            exclude_empty: self.exclude_empty.clone(),
+            column: (!self.search_query.is_empty())
+                .then(|| self.columns.get(self.search_column).cloned())
+                .flatten(),
+            text: self.search_query.clone(),
+        }
+    }
+
+    fn check_filter_suggestions(&mut self) {
+        let Some(receiver) = &self.filter_suggestions_rx else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(values)) => {
+                self.filter_suggestions = values;
+                self.filter_suggestions_rx = None;
+                self.filter_values_loading = false;
+                if self.mode == Mode::Filter {
+                    self.refresh_popup_matches_for(PopupSource::FilterValues);
+                }
+            }
+            Ok(Err(error)) => {
+                self.filter_suggestions_rx = None;
+                self.filter_values_loading = false;
+                self.flash = Some((format!("Filter values error: {error}"), Instant::now()));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.filter_suggestions_rx = None;
+                self.filter_values_loading = false;
+            }
+        }
+    }
+
+    fn check_export_result(&mut self) {
+        let Some(receiver) = &self.export_rx else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok((path, Ok(count))) => {
+                self.export_rx = None;
+                self.exporting = false;
+                self.flash = Some((
+                    format!("Exported {count} rows to {}", path.display()),
+                    Instant::now(),
+                ));
+            }
+            Ok((_, Err(error))) => {
+                self.export_rx = None;
+                self.exporting = false;
+                self.flash = Some((format!("Export error: {error}"), Instant::now()));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.export_rx = None;
+                self.exporting = false;
             }
         }
     }
@@ -428,11 +499,13 @@ impl App {
 
     fn refresh_popup_matches_for(&mut self, source: PopupSource) {
         self.popup_matches = match source {
-            PopupSource::FilterValues => {
-                rank_against(&mut self.matcher, &self.popup_query, &self.filter_suggestions)
-            }
+            PopupSource::FilterValues => picker::rank(
+                &mut self.matcher,
+                &self.popup_query,
+                &self.filter_suggestions,
+            ),
             PopupSource::Columns => {
-                rank_against(&mut self.matcher, &self.popup_query, &self.columns)
+                picker::rank(&mut self.matcher, &self.popup_query, &self.columns)
             }
         };
         let cursor = match source {
@@ -453,16 +526,14 @@ impl App {
     }
 
     fn popup_insert_char(&mut self, c: char) {
-        self.popup_query.insert(self.popup_query_cursor, c);
-        self.popup_query_cursor += 1;
+        input::insert(&mut self.popup_query, &mut self.popup_query_cursor, c);
         self.reset_popup_cursor();
         self.refresh_popup_matches_current();
     }
 
     fn popup_backspace(&mut self) {
         if self.popup_query_cursor > 0 {
-            self.popup_query_cursor -= 1;
-            self.popup_query.remove(self.popup_query_cursor);
+            input::backspace(&mut self.popup_query, &mut self.popup_query_cursor);
             self.reset_popup_cursor();
             self.refresh_popup_matches_current();
         }
@@ -486,6 +557,7 @@ impl App {
     fn load_filter_suggestions(&mut self) {
         let Some(file) = self.file.clone() else {
             self.filter_suggestions = Vec::new();
+            self.filter_values_loading = false;
             return;
         };
         let col_name = self.columns[self.filter_column].clone();
@@ -496,10 +568,14 @@ impl App {
             .filter(|(k, v)| *k != &col_name && !v.is_empty())
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        match search::unique_values(&file, &col_name, &other_filters, 500) {
-            Ok(values) => self.filter_suggestions = values,
-            Err(_) => self.filter_suggestions = Vec::new(),
-        }
+        self.filter_suggestions.clear();
+        self.filter_values_loading = true;
+        let (sender, receiver) = mpsc::channel();
+        self.filter_suggestions_rx = Some(receiver);
+        std::thread::spawn(move || {
+            let result = search::unique_values(&file, &col_name, &other_filters, 500);
+            let _ = sender.send(result);
+        });
     }
 
     fn toggle_filter_value(&mut self) {
@@ -549,7 +625,7 @@ impl App {
     pub fn enter_file_picker(&mut self) {
         self.picker_paths.clear();
         self.picker_strs.clear();
-        walk_parquet_files(
+        picker::walk_parquet_files(
             &self.picker_root,
             &self.picker_root,
             PICKER_MAX_DEPTH,
@@ -559,7 +635,10 @@ impl App {
         // Stable alphabetical baseline for empty query
         let mut order: Vec<usize> = (0..self.picker_strs.len()).collect();
         order.sort_by(|a, b| self.picker_strs[*a].cmp(&self.picker_strs[*b]));
-        let paths: Vec<PathBuf> = order.iter().map(|i| self.picker_paths[*i].clone()).collect();
+        let paths: Vec<PathBuf> = order
+            .iter()
+            .map(|i| self.picker_paths[*i].clone())
+            .collect();
         let strs: Vec<String> = order.iter().map(|i| self.picker_strs[*i].clone()).collect();
         self.picker_paths = paths;
         self.picker_strs = strs;
@@ -572,7 +651,8 @@ impl App {
     }
 
     fn refresh_picker_matches(&mut self) {
-        self.picker_matches = rank_against(&mut self.matcher, &self.picker_query, &self.picker_strs);
+        self.picker_matches =
+            picker::rank(&mut self.matcher, &self.picker_query, &self.picker_strs);
         if self.picker_idx >= self.picker_matches.len() {
             self.picker_idx = self.picker_matches.len().saturating_sub(1);
         }
@@ -618,7 +698,6 @@ impl App {
         self.preview_column = None;
         self.rows.clear();
         self.total_matches = 0;
-        self.query_rx = None;
         self.reset_results();
         self.execute_query();
         Ok(())
@@ -630,122 +709,30 @@ enum PopupSource {
     Columns,
 }
 
-fn rank_against(matcher: &mut Matcher, query: &str, source: &[String]) -> Vec<usize> {
-    if query.is_empty() {
-        return (0..source.len()).collect();
-    }
-    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
-    let mut scored: Vec<(usize, u32)> = Vec::with_capacity(source.len());
-    for (i, cand) in source.iter().enumerate() {
-        let mut hay_buf = Vec::new();
-        let haystack = Utf32Str::new(cand, &mut hay_buf);
-        if let Some(score) = pattern.score(haystack, matcher) {
-            scored.push((i, score));
-        }
-    }
-    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| source[a.0].cmp(&source[b.0])));
-    scored.into_iter().map(|(i, _)| i).collect()
-}
-
-fn walk_parquet_files(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
-    paths: &mut Vec<PathBuf>,
-    strs: &mut Vec<String>,
-) {
-    if depth == 0 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        if file_name.starts_with('.') {
-            continue;
-        }
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
-            if matches!(file_name, "target" | "node_modules") {
-                continue;
-            }
-            walk_parquet_files(root, &path, depth - 1, paths, strs);
-        } else if ft.is_file() && path.extension().is_some_and(|e| e == "parquet") {
-            let display = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            paths.push(path);
-            strs.push(display);
-        }
-    }
-}
-
 pub fn run(file: Option<PathBuf>) -> Result<()> {
     let mut app = App::new();
 
     if let Some(path) = file {
-        match app.load_file(path) {
-            Ok(()) => {
-                // Replace background query with a synchronous initial load so
-                // data is visible on first frame.
-                app.query_rx = None;
-                app.loading = false;
-                if let (Some(file), false) = (app.file.clone(), app.columns.is_empty()) {
-                    match search::query(
-                        &file,
-                        &HashMap::new(),
-                        &HashSet::new(),
-                        None,
-                        "",
-                        &app.columns,
-                        PAGE_SIZE,
-                        0,
-                    ) {
-                        Ok(result) => {
-                            app.rows = result.rows;
-                            app.total_matches = result.total_matches;
-                        }
-                        Err(e) => {
-                            app.flash = Some((format!("Load error: {}", e), Instant::now()));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                app.flash = Some((format!("Load error: {}", e), Instant::now()));
-            }
+        if let Err(error) = app.load_file(path) {
+            app.flash = Some((format!("Load error: {error}"), Instant::now()));
         }
     } else {
         app.enter_file_picker();
     }
 
-    let mut tty = stdout();
-    tty.execute(EnterAlternateScreen)?;
-    terminal::enable_raw_mode()?;
-
-    let panic_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = terminal::disable_raw_mode();
-        let _ = stdout().execute(LeaveAlternateScreen);
-        panic_hook(info);
-    }));
+    let _terminal_session = terminal_session::Session::enter()?;
 
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
     loop {
         app.check_query_result();
+        app.check_filter_suggestions();
+        app.check_export_result();
 
         terminal.draw(|f| render::draw(f, &mut app))?;
 
-        let timeout = if app.loading {
+        let timeout = if app.loading || app.exporting || app.filter_suggestions_rx.is_some() {
             Duration::from_millis(50)
         } else if app.flash.is_some() {
             Duration::from_millis(100)
@@ -754,10 +741,10 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
         };
 
         if !event::poll(timeout)? {
-            if let Some((_, t)) = &app.flash {
-                if t.elapsed() > Duration::from_secs(2) {
-                    app.flash = None;
-                }
+            if let Some((_, time)) = &app.flash
+                && time.elapsed() > Duration::from_secs(2)
+            {
+                app.flash = None;
             }
             continue;
         }
@@ -771,20 +758,31 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
         }
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if app.exporting {
+                app.flash = Some((
+                    "Export in progress; wait before quitting".into(),
+                    Instant::now(),
+                ));
+                continue;
+            }
             break;
         }
 
         match app.mode {
             Mode::Browse => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('q') | KeyCode::Esc if !app.exporting => break,
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    app.flash = Some((
+                        "Export in progress; wait before quitting".into(),
+                        Instant::now(),
+                    ));
+                }
                 KeyCode::Char('o') => {
                     app.enter_file_picker();
                 }
-                KeyCode::Char('/') | KeyCode::Char('s') => {
-                    if app.file.is_some() {
-                        app.search_column = app.filter_column;
-                        app.mode = Mode::Search;
-                    }
+                KeyCode::Char('/') | KeyCode::Char('s') if app.file.is_some() => {
+                    app.search_column = app.filter_column;
+                    app.mode = Mode::Search;
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let page = app.table_height.saturating_sub(2);
@@ -861,11 +859,9 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Tab => {
                     app.show_preview = !app.show_preview;
                 }
-                KeyCode::Enter => {
-                    if app.show_preview {
-                        app.preview_column = Some(app.filter_column);
-                        app.preview_scroll = 0;
-                    }
+                KeyCode::Enter if app.show_preview => {
+                    app.preview_column = Some(app.filter_column);
+                    app.preview_scroll = 0;
                 }
                 KeyCode::Char('J') => {
                     app.preview_scroll += 1;
@@ -888,10 +884,17 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                     app.cycle_theme();
                 }
                 KeyCode::Char('w') => {
+                    if app.exporting {
+                        app.flash = Some(("Export already in progress".into(), Instant::now()));
+                        continue;
+                    }
                     let Some(file) = app.file.clone() else {
                         continue;
                     };
-                    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+                    let stem = file
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("output");
                     let dir = file.parent().unwrap_or(std::path::Path::new("."));
                     let default_path = dir.join(format!("{}_filtered.parquet", stem));
                     app.export_path = default_path.to_string_lossy().to_string();
@@ -910,43 +913,31 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                     app.execute_query();
                     app.mode = Mode::Browse;
                 }
-                KeyCode::BackTab => {
-                    if !app.columns.is_empty() {
-                        app.search_column = if app.search_column == 0 {
-                            app.columns.len() - 1
-                        } else {
-                            app.search_column - 1
-                        };
-                    }
+                KeyCode::BackTab if !app.columns.is_empty() => {
+                    app.search_column = if app.search_column == 0 {
+                        app.columns.len() - 1
+                    } else {
+                        app.search_column - 1
+                    };
                 }
-                KeyCode::Tab => {
-                    if !app.columns.is_empty() {
-                        app.search_column = (app.search_column + 1) % app.columns.len();
-                    }
+                KeyCode::Tab if !app.columns.is_empty() => {
+                    app.search_column = (app.search_column + 1) % app.columns.len();
                 }
                 KeyCode::Backspace => {
-                    if app.search_cursor > 0 {
-                        app.search_cursor -= 1;
-                        app.search_query.remove(app.search_cursor);
-                    }
+                    input::backspace(&mut app.search_query, &mut app.search_cursor);
                 }
                 KeyCode::Left => {
-                    if app.search_cursor > 0 {
-                        app.search_cursor -= 1;
-                    }
+                    input::move_left(&app.search_query, &mut app.search_cursor);
                 }
                 KeyCode::Right => {
-                    if app.search_cursor < app.search_query.len() {
-                        app.search_cursor += 1;
-                    }
+                    input::move_right(&app.search_query, &mut app.search_cursor);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.search_query.clear();
                     app.search_cursor = 0;
                 }
                 KeyCode::Char(c) => {
-                    app.search_query.insert(app.search_cursor, c);
-                    app.search_cursor += 1;
+                    input::insert(&mut app.search_query, &mut app.search_cursor, c);
                 }
                 _ => {}
             },
@@ -965,62 +956,40 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                         continue;
                     };
                     let path = PathBuf::from(&app.export_path);
-                    let filters: HashMap<String, Vec<String>> = app
-                        .filters
-                        .iter()
-                        .filter(|(_, v)| !v.is_empty())
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    let search = if app.search_query.is_empty() {
-                        None
-                    } else {
-                        Some(app.columns[app.search_column].as_str())
-                    };
-                    let visible = app.display_columns();
-                    match search::export(
-                        &file,
-                        &path,
-                        &filters,
-                        &app.exclude_empty,
-                        search,
-                        &app.search_query,
-                        &visible,
-                    ) {
-                        Ok(count) => {
-                            app.flash = Some((
-                                format!("Exported {} rows to {}", count, app.export_path),
-                                Instant::now(),
-                            ));
-                        }
-                        Err(e) => {
-                            app.flash = Some((format!("Export error: {}", e), Instant::now()));
-                        }
+                    if path.exists() {
+                        app.flash = Some((
+                            format!("Export path already exists: {}", path.display()),
+                            Instant::now(),
+                        ));
+                        app.mode = Mode::Browse;
+                        continue;
                     }
+                    let criteria = app.search_criteria();
+                    let visible = app.display_columns();
+                    let (sender, receiver) = mpsc::channel();
+                    app.export_rx = Some(receiver);
+                    app.exporting = true;
+                    std::thread::spawn(move || {
+                        let result = search::export(&file, &path, &criteria, &visible);
+                        let _ = sender.send((path, result));
+                    });
                     app.mode = Mode::Browse;
                 }
                 KeyCode::Backspace => {
-                    if app.export_cursor > 0 {
-                        app.export_cursor -= 1;
-                        app.export_path.remove(app.export_cursor);
-                    }
+                    input::backspace(&mut app.export_path, &mut app.export_cursor);
                 }
                 KeyCode::Left => {
-                    if app.export_cursor > 0 {
-                        app.export_cursor -= 1;
-                    }
+                    input::move_left(&app.export_path, &mut app.export_cursor);
                 }
                 KeyCode::Right => {
-                    if app.export_cursor < app.export_path.len() {
-                        app.export_cursor += 1;
-                    }
+                    input::move_right(&app.export_path, &mut app.export_cursor);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.export_path.clear();
                     app.export_cursor = 0;
                 }
                 KeyCode::Char(c) => {
-                    app.export_path.insert(app.export_cursor, c);
-                    app.export_cursor += 1;
+                    input::insert(&mut app.export_path, &mut app.export_cursor, c);
                 }
                 _ => {}
             },
@@ -1036,25 +1005,22 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::Enter => {
                     app.pick_current_file();
                 }
-                KeyCode::Up => {
-                    if app.picker_idx > 0 {
-                        app.picker_idx -= 1;
-                    }
+                KeyCode::Up if app.picker_idx > 0 => {
+                    app.picker_idx -= 1;
                 }
-                KeyCode::Down => {
-                    if app.picker_idx + 1 < app.picker_matches.len() {
-                        app.picker_idx += 1;
-                    }
+                KeyCode::Down if app.picker_idx + 1 < app.picker_matches.len() => {
+                    app.picker_idx += 1;
                 }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.picker_idx > 0 {
-                        app.picker_idx -= 1;
-                    }
+                KeyCode::Char('p')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && app.picker_idx > 0 =>
+                {
+                    app.picker_idx -= 1;
                 }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.picker_idx + 1 < app.picker_matches.len() {
-                        app.picker_idx += 1;
-                    }
+                KeyCode::Char('n')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.picker_idx + 1 < app.picker_matches.len() =>
+                {
+                    app.picker_idx += 1;
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let page = popup_page_size(app.popup_visible_height);
@@ -1066,21 +1032,14 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                     popup_page_up(&mut app.picker_idx, page);
                 }
                 KeyCode::Backspace => {
-                    if app.picker_cursor > 0 {
-                        app.picker_cursor -= 1;
-                        app.picker_query.remove(app.picker_cursor);
-                        app.refresh_picker_matches();
-                    }
+                    input::backspace(&mut app.picker_query, &mut app.picker_cursor);
+                    app.refresh_picker_matches();
                 }
                 KeyCode::Left => {
-                    if app.picker_cursor > 0 {
-                        app.picker_cursor -= 1;
-                    }
+                    input::move_left(&app.picker_query, &mut app.picker_cursor);
                 }
                 KeyCode::Right => {
-                    if app.picker_cursor < app.picker_query.len() {
-                        app.picker_cursor += 1;
-                    }
+                    input::move_right(&app.picker_query, &mut app.picker_cursor);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.picker_query.clear();
@@ -1088,8 +1047,7 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                     app.refresh_picker_matches();
                 }
                 KeyCode::Char(c) => {
-                    app.picker_query.insert(app.picker_cursor, c);
-                    app.picker_cursor += 1;
+                    input::insert(&mut app.picker_query, &mut app.picker_cursor, c);
                     app.refresh_picker_matches();
                 }
                 _ => {}
@@ -1097,8 +1055,6 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
         }
     }
 
-    terminal::disable_raw_mode()?;
-    tty.execute(LeaveAlternateScreen)?;
     Ok(())
 }
 
@@ -1119,14 +1075,10 @@ fn handle_filter_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             KeyCode::Char('u') if ctrl => app.popup_clear_query(),
             KeyCode::Backspace => app.popup_backspace(),
             KeyCode::Left => {
-                if app.popup_query_cursor > 0 {
-                    app.popup_query_cursor -= 1;
-                }
+                input::move_left(&app.popup_query, &mut app.popup_query_cursor);
             }
             KeyCode::Right => {
-                if app.popup_query_cursor < app.popup_query.len() {
-                    app.popup_query_cursor += 1;
-                }
+                input::move_right(&app.popup_query, &mut app.popup_query_cursor);
             }
             KeyCode::Char(c) => app.popup_insert_char(c),
             _ => {}
@@ -1165,14 +1117,10 @@ fn handle_columns_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             KeyCode::Char('u') if ctrl => app.popup_clear_query(),
             KeyCode::Backspace => app.popup_backspace(),
             KeyCode::Left => {
-                if app.popup_query_cursor > 0 {
-                    app.popup_query_cursor -= 1;
-                }
+                input::move_left(&app.popup_query, &mut app.popup_query_cursor);
             }
             KeyCode::Right => {
-                if app.popup_query_cursor < app.popup_query.len() {
-                    app.popup_query_cursor += 1;
-                }
+                input::move_right(&app.popup_query, &mut app.popup_query_cursor);
             }
             KeyCode::Char(c) => app.popup_insert_char(c),
             _ => {}
