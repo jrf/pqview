@@ -223,6 +223,10 @@ mod tests {
             "optional" => optional,
         )
         .unwrap();
+        let event_times = Int64Chunked::from_vec("event_time".into(), vec![0; 100])
+            .into_datetime(TimeUnit::Milliseconds, Some("America/Chicago".into()))
+            .into_series();
+        frame.with_column(event_times).unwrap();
         ParquetWriter::new(file.reopen().unwrap())
             .finish(&mut frame)
             .unwrap();
@@ -239,6 +243,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"description"));
         assert!(names.contains(&"record_id"));
+    }
+
+    #[test]
+    fn formats_timezone_aware_datetimes() {
+        let file = synthetic_file();
+        let columns = vec!["event_time".into()];
+
+        let result = query(file.path(), &SearchCriteria::default(), &columns, 1, 0).unwrap();
+
+        assert!(result.rows[0][0].contains("1969-12-31 18:00:00"));
     }
 
     #[test]
