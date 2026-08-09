@@ -99,12 +99,12 @@ fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
 fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let popup_area = picker_rect(area);
-    let surface = t.background_deep;
+    let surface = t.background;
     let chrome = t.background_dark;
-    let selection = t.surface_selected;
+    let selection = t.cursor_bg;
 
     f.render_widget(
-        Block::default().style(Style::default().bg(t.background)),
+        Block::default().style(Style::default().bg(t.background_deep)),
         area,
     );
     f.render_widget(Clear, popup_area);
@@ -135,7 +135,7 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let filter_line = if app.picker_query.is_empty() {
         Line::from(Span::styled(
             " type to filter...",
-            Style::default().fg(t.text_muted).bg(chrome),
+            Style::default().fg(t.text_dim).bg(chrome),
         ))
     } else {
         Line::from(vec![
@@ -195,7 +195,7 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
         };
         lines.push(Line::from(Span::styled(
             message,
-            Style::default().fg(t.text_muted).bg(surface),
+            Style::default().fg(t.text_dim).bg(surface),
         )));
     }
     f.render_widget(
@@ -283,12 +283,12 @@ fn picker_hint_line(
         ));
         spans.push(Span::styled(
             format!(" {action}  "),
-            Style::default().fg(t.text_muted).bg(chrome),
+            Style::default().fg(t.text_dim).bg(chrome),
         ));
     }
     spans.push(Span::styled(
         status,
-        Style::default().fg(t.text_muted).bg(chrome),
+        Style::default().fg(t.text_dim).bg(chrome),
     ));
     Line::from(spans)
 }
@@ -296,12 +296,12 @@ fn picker_hint_line(
 fn draw_theme_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let popup_area = picker_rect(area);
-    let surface = t.background_deep;
+    let surface = t.background;
     let chrome = t.background_dark;
-    let selection = t.surface_selected;
+    let selection = t.cursor_bg;
 
     f.render_widget(
-        Block::default().style(Style::default().bg(t.background)),
+        Block::default().style(Style::default().bg(t.background_deep)),
         area,
     );
     f.render_widget(Clear, popup_area);
@@ -333,18 +333,15 @@ fn draw_theme_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .skip(scroll)
         .take(visible_height)
-        .map(|(index, theme)| {
+        .map(|(index, (name, _))| {
             let selected = index == app.theme_idx;
             let background = if selected { selection } else { surface };
             let marker = if selected { "▌ " } else { "  " };
             let mut line = Line::from(vec![
                 Span::styled(marker, Style::default().fg(t.picker_accent).bg(background)),
                 Span::styled(
-                    theme.name.clone(),
-                    Style::default()
-                        .fg(if selected { t.selection } else { t.text })
-                        .bg(background)
-                        .bold(),
+                    name.clone(),
+                    Style::default().fg(t.text).bg(background).bold(),
                 ),
             ]);
             let used = line.width();
@@ -365,7 +362,7 @@ fn draw_theme_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(
         Paragraph::new(picker_hint_line(
-            &[("j/k", "preview"), ("enter", "apply"), ("esc", "cancel")],
+            &[("j/k", "select"), ("enter", "apply"), ("esc", "cancel")],
             format!("{}/{}", app.theme_idx + 1, app.themes.len()),
             chrome,
             selection,
@@ -432,15 +429,15 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     let block = Block::default()
         .title(format!(" Filter: {} ", col_name))
-        .title_style(Style::default().fg(t.accent_filter).bold())
+        .title_style(Style::default().fg(t.accent).bold())
         .title_bottom(bottom)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.accent_filter));
+        .border_style(Style::default().fg(t.accent));
 
     let inner = block.inner(popup_area);
     f.render_widget(block, popup_area);
 
-    let list_area = draw_popup_query_row(f, app, inner, t.accent_filter);
+    let list_area = draw_popup_query_row(f, app, inner, t.accent);
     app.popup_visible_height = list_area.height as usize;
 
     if app.filter_suggestions.is_empty() {
@@ -450,7 +447,7 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
             "No values found"
         };
         let msg = Paragraph::new(message)
-            .style(Style::default().fg(t.text_muted))
+            .style(Style::default().fg(t.text_dim))
             .alignment(Alignment::Center);
         f.render_widget(msg, list_area);
         return;
@@ -458,7 +455,7 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     if app.popup_matches.is_empty() {
         let msg = Paragraph::new("No matches")
-            .style(Style::default().fg(t.text_muted))
+            .style(Style::default().fg(t.text_dim))
             .alignment(Alignment::Center);
         f.render_widget(msg, list_area);
         return;
@@ -471,7 +468,7 @@ fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
         &app.popup_matches,
         &app.filter_selected,
         app.filter_cursor_idx,
-        (t.accent_filter, t),
+        (t.accent, t),
     );
 }
 
@@ -514,7 +511,7 @@ fn draw_columns_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     if app.popup_matches.is_empty() && !app.columns.is_empty() {
         let msg = Paragraph::new("No matches")
-            .style(Style::default().fg(t.text_muted))
+            .style(Style::default().fg(t.text_dim))
             .alignment(Alignment::Center);
         f.render_widget(msg, list_area);
         return;
@@ -565,16 +562,13 @@ fn draw_checklist(
             let text = format!("{}{}", checkbox, val);
 
             let style = if is_cursor && is_selected {
-                Style::default()
-                    .fg(active_color)
-                    .bg(t.surface_focused)
-                    .bold()
+                Style::default().fg(active_color).bg(t.cursor_bg).bold()
             } else if is_cursor {
-                Style::default().fg(t.text).bg(t.surface_focused).bold()
+                Style::default().fg(t.text).bg(t.cursor_bg).bold()
             } else if is_selected {
                 Style::default().fg(active_color)
             } else {
-                Style::default().fg(t.text_muted)
+                Style::default().fg(t.text)
             };
 
             Some(ListItem::new(text).style(style))
@@ -603,13 +597,13 @@ fn draw_popup_query_row(f: &mut Frame, app: &App, area: Rect, active_color: Colo
     let prefix_color = if app.popup_searching {
         active_color
     } else {
-        t.text_muted
+        t.text_dim
     };
     let prompt_prefix = Span::styled("/ ", Style::default().fg(prefix_color).bold());
     let query_color = if app.popup_searching {
         t.text
     } else {
-        t.text_muted
+        t.text_dim
     };
     let query_span = Span::styled(&app.popup_query, Style::default().fg(query_color));
     f.render_widget(
@@ -643,7 +637,7 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         + app.exclude_empty.len();
 
     let border_style = if app.mode == Mode::Filter {
-        Style::default().fg(t.accent_filter)
+        Style::default().fg(t.accent)
     } else {
         Style::default().fg(t.border)
     };
@@ -657,9 +651,9 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(title)
         .title_style(Style::default().fg(if filter_count > 0 {
-            t.accent_filter
+            t.accent
         } else {
-            t.text_muted
+            t.text_dim
         }))
         .borders(Borders::ALL)
         .border_style(border_style);
@@ -692,17 +686,15 @@ fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let fg = if is_search_col {
-            t.accent_search
-        } else if filter_display.is_some() || is_excluding_empty {
-            t.accent_filter
-        } else if is_focused {
+            t.heading
+        } else if filter_display.is_some() || is_excluding_empty || is_focused {
             t.accent
         } else {
-            t.text_muted
+            t.text_dim
         };
 
         let style = if is_focused {
-            Style::default().fg(fg).bg(t.surface_focused).bold()
+            Style::default().fg(fg).bg(t.cursor_bg).bold()
         } else {
             Style::default().fg(fg)
         };
@@ -722,7 +714,7 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
     let is_searching = app.mode == Mode::Search;
 
     let border_style = if is_searching {
-        Style::default().fg(t.accent_search)
+        Style::default().fg(t.heading)
     } else {
         Style::default().fg(t.border)
     };
@@ -740,16 +732,16 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
         .title(title)
         .title_style(
             Style::default().fg(if is_searching || !app.search_query.is_empty() {
-                t.accent_search
+                t.heading
             } else {
-                t.text_muted
+                t.text_dim
             }),
         )
         .borders(Borders::ALL)
         .border_style(border_style);
 
     let input_text = if app.search_query.is_empty() && !is_searching {
-        Span::styled("", Style::default().fg(t.text_muted))
+        Span::styled("", Style::default().fg(t.text_dim))
     } else {
         Span::styled(&app.search_query, Style::default().fg(t.text))
     };
@@ -824,17 +816,20 @@ fn compute_filter_scroll(app: &App, visible_width: u16) -> u16 {
 
 fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
-    let status = if app.loading {
-        " loading... ".to_string()
+    let (status, status_color) = if app.loading {
+        (" loading... ".to_string(), t.picker_loading)
     } else {
         let page_start = app.offset as usize + 1;
         let page_end = (app.offset as usize + app.rows.len()).min(app.total_matches);
         if app.total_matches > 0 {
-            format!(" {}-{} of {} ", page_start, page_end, app.total_matches)
+            (
+                format!(" {}-{} of {} ", page_start, page_end, app.total_matches),
+                t.text_dim,
+            )
         } else if app.has_active_filters() || !app.search_query.is_empty() {
-            " no matches ".to_string()
+            (" no matches ".to_string(), t.error)
         } else {
-            " no data ".to_string()
+            (" no data ".to_string(), t.text_dim)
         }
     };
 
@@ -843,8 +838,11 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(t.accent))
-        .title_bottom(status)
+        .title_style(Style::default().fg(t.heading).bold())
+        .title_bottom(Line::from(Span::styled(
+            status,
+            Style::default().fg(status_color),
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.border));
 
@@ -857,7 +855,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
             "No data"
         };
         let paragraph = Paragraph::new(empty_msg)
-            .style(Style::default().fg(t.text_muted))
+            .style(Style::default().fg(t.text_dim))
             .block(block)
             .alignment(Alignment::Center);
         f.render_widget(paragraph, area);
@@ -878,14 +876,20 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
                 .get(name)
                 .is_some_and(|v| !v.is_empty());
             let is_search_col = name == app.search_column_name() && !app.search_query.is_empty();
+            let is_focused = app
+                .columns
+                .get(app.filter_column)
+                .is_some_and(|focused| focused == name);
             let style = if has_filter && is_search_col {
-                Style::default().fg(t.accent_filter).bold().underlined()
+                Style::default().fg(t.key).bold().underlined()
             } else if has_filter {
-                Style::default().fg(t.accent_filter).bold()
-            } else if is_search_col {
-                Style::default().fg(t.accent_search).bold()
-            } else {
                 Style::default().fg(t.accent).bold()
+            } else if is_search_col {
+                Style::default().fg(t.heading).bold()
+            } else if is_focused {
+                Style::default().fg(t.selection).bold()
+            } else {
+                Style::default().fg(t.text_bright).bold()
             };
             Cell::from(name.as_str()).style(style)
         })
@@ -900,7 +904,7 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
         .take(visible_rows)
         .map(|(i, row)| {
             let style = if i == app.selected {
-                Style::default().bg(t.surface_selected).fg(t.text)
+                Style::default().bg(t.cursor_bg).fg(t.selection)
             } else {
                 Style::default().fg(t.text)
             };
@@ -927,16 +931,46 @@ fn draw_results_table(f: &mut Frame, app: &mut App, area: Rect) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .row_highlight_style(Style::default().bg(t.surface_selected));
+        .row_highlight_style(Style::default().bg(t.cursor_bg));
 
     f.render_widget(table, area);
 
-    let help = " j/k nav | h/l column | f filter | / search | x !null | w export | v columns | o open | t theme | n/p page | Tab preview | C clear | q quit ";
-    let help_span = Span::styled(help, Style::default().fg(t.text_muted));
+    let help = navigation_help_line(t);
     let help_area = Rect::new(area.x + 1, area.bottom() - 1, help.width() as u16, 1);
     if help_area.right() < area.right() {
-        f.render_widget(Paragraph::new(help_span), help_area);
+        f.render_widget(Paragraph::new(help), help_area);
     }
+}
+
+fn navigation_help_line(t: &Theme) -> Line<'static> {
+    let bindings = [
+        ("j/k", "nav"),
+        ("h/l", "column"),
+        ("f", "filter"),
+        ("/", "search"),
+        ("x", "!null"),
+        ("w", "export"),
+        ("v", "columns"),
+        ("o", "open"),
+        ("t", "theme"),
+        ("n/p", "page"),
+        ("Tab", "preview"),
+        ("C", "clear"),
+        ("q", "quit"),
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    for (index, (key, action)) in bindings.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(t.border)));
+        }
+        spans.push(Span::styled(key, Style::default().fg(t.key).bold()));
+        spans.push(Span::styled(
+            format!(" {action}"),
+            Style::default().fg(t.text_dim),
+        ));
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
 }
 
 fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
@@ -956,7 +990,7 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 
     if app.rows.is_empty() || app.selected >= app.rows.len() {
         let paragraph = Paragraph::new("No row selected")
-            .style(Style::default().fg(t.text_muted))
+            .style(Style::default().fg(t.text_dim))
             .block(block);
         f.render_widget(paragraph, area);
         return;
@@ -1003,7 +1037,10 @@ fn highlight_matches<'a>(text: &'a str, query: &str, t: &Theme) -> Line<'a> {
         }
         spans.push(Span::styled(
             text[start..start + query.len()].to_string(),
-            Style::default().fg(t.text_on_match).bg(t.accent_search),
+            Style::default()
+                .fg(t.background_dark)
+                .bg(t.selection)
+                .bold(),
         ));
         last_end = start + query.len();
     }
@@ -1119,10 +1156,10 @@ mod tests {
         assert!(text.contains("esc  quit"));
         assert!(text.contains("1/1"));
 
-        assert_eq!(buffer.cell((0, 0)).unwrap().bg, app.theme.background);
+        assert_eq!(buffer.cell((0, 0)).unwrap().bg, app.theme.background_deep);
         assert_eq!(buffer.cell((11, 4)).unwrap().bg, app.theme.background_dark);
         assert_eq!(buffer.cell((11, 5)).unwrap().symbol(), "▌");
-        assert_eq!(buffer.cell((11, 5)).unwrap().bg, app.theme.surface_selected);
+        assert_eq!(buffer.cell((11, 5)).unwrap().bg, app.theme.cursor_bg);
     }
 
     #[test]
@@ -1138,9 +1175,12 @@ mod tests {
     #[test]
     fn theme_picker_uses_preview_panel_layout() {
         let mut app = App::new();
+        let mut alternate = app.theme;
+        alternate.accent = Color::Red;
+        app.themes.push(("alternate".into(), alternate));
         app.mode = Mode::ThemePicker;
         app.theme_idx = 1;
-        app.theme = app.themes[1].clone();
+        app.theme = app.themes[1].1;
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -1154,10 +1194,43 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Themes"));
-        assert!(text.contains("Catppuccin"));
-        assert!(text.contains("j/k  preview"));
+        assert!(text.contains("alternate"));
+        assert!(text.contains("j/k  select"));
         assert!(text.contains("enter  apply"));
         assert!(text.contains("esc  cancel"));
-        assert!(text.contains("2/5"));
+        assert!(text.contains("2/2"));
+    }
+
+    #[test]
+    fn browse_view_uses_distinct_semantic_theme_roles() {
+        let mut app = App::new();
+        app.columns = vec!["alpha".into(), "beta".into()];
+        app.visible_columns = app.columns.iter().cloned().collect();
+        app.rows = vec![vec!["one".into(), "two".into()]; 2];
+        app.total_matches = 2;
+        app.show_preview = false;
+
+        let mut terminal = Terminal::new(TestBackend::new(220, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let results_x = find_in_row(buffer, 6, "Results");
+        let alpha_x = find_in_row(buffer, 7, "alpha");
+        let beta_x = find_in_row(buffer, 7, "beta");
+        let key_x = find_in_row(buffer, 23, "j/k");
+        let action_x = find_in_row(buffer, 23, "nav");
+
+        assert_eq!(buffer.cell((results_x, 6)).unwrap().fg, app.theme.heading);
+        assert_eq!(buffer.cell((alpha_x, 7)).unwrap().fg, app.theme.selection);
+        assert_eq!(buffer.cell((beta_x, 7)).unwrap().fg, app.theme.text_bright);
+        assert_eq!(buffer.cell((key_x, 23)).unwrap().fg, app.theme.key);
+        assert_eq!(buffer.cell((action_x, 23)).unwrap().fg, app.theme.text_dim);
+    }
+
+    fn find_in_row(buffer: &Buffer, y: u16, needle: &str) -> u16 {
+        let row = (0..buffer.area.width)
+            .map(|x| buffer.cell((x, y)).unwrap().symbol())
+            .collect::<String>();
+        row.find(needle).unwrap() as u16
     }
 }

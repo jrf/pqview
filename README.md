@@ -68,6 +68,7 @@ Powered by [nucleo](https://crates.io/crates/nucleo-matcher).
 |-----|--------|
 | `j` / `k` or arrows | Preview themes (wraps at either end) |
 | `Home` / `End` | Preview first / last theme |
+| `Page Up` / `Page Down` | Preview one picker page earlier / later |
 | `Enter` | Apply the previewed theme for this session |
 | `Esc` | Cancel and restore the previous theme |
 
@@ -117,7 +118,7 @@ Press `w` in browse mode to edit the output path, then press `Enter`. Export run
 
 ## Themes
 
-Without configuration, pqview offers its five built-in themes. To share themes with pdfterm and MDR, create `~/.config/pqview/config.toml` (or `$XDG_CONFIG_HOME/pqview/config.toml`):
+Without configuration, pqview uses the same built-in Tokyo Night Moon fallback as MDR and pdfterm. To share their theme catalog, create `~/.config/pqview/config.toml` (or `$XDG_CONFIG_HOME/pqview/config.toml`):
 
 ```toml
 theme = "~/.config/themes/tokyo-night-moon.toml"

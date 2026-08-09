@@ -90,7 +90,7 @@ pub struct App {
     pub filter_values_loading: bool,
     pub flash: Option<(String, Instant)>,
     pub theme: Theme,
-    pub themes: Vec<Theme>,
+    pub themes: Vec<(String, Theme)>,
     pub theme_idx: usize,
     theme_original_idx: Option<usize>,
     query_worker: QueryWorker,
@@ -104,13 +104,13 @@ pub struct App {
 impl App {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::with_themes(theme::built_in_themes(), 0)
+        Self::with_themes(vec![("default".into(), theme::default_theme())], 0)
     }
 
-    fn with_themes(themes: Vec<Theme>, theme_idx: usize) -> Self {
+    fn with_themes(themes: Vec<(String, Theme)>, theme_idx: usize) -> Self {
         let picker_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let theme_idx = theme_idx.min(themes.len().saturating_sub(1));
-        let active_theme = themes[theme_idx].clone();
+        let active_theme = themes[theme_idx].1;
         Self {
             mode: Mode::Browse,
             file: None,
@@ -233,16 +233,17 @@ impl App {
     }
 
     fn preview_theme(&mut self, index: usize) {
-        if let Some(theme) = self.themes.get(index).cloned() {
+        if let Some((_, theme)) = self.themes.get(index) {
             self.theme_idx = index;
-            self.theme = theme;
+            self.theme = *theme;
         }
     }
 
     fn confirm_theme(&mut self) {
         self.theme_original_idx = None;
         self.mode = Mode::Browse;
-        self.flash = Some((format!("Theme: {}", self.theme.name), Instant::now()));
+        let name = &self.themes[self.theme_idx].0;
+        self.flash = Some((format!("Theme: {name}"), Instant::now()));
     }
 
     fn cancel_theme_picker(&mut self) {
@@ -1093,6 +1094,14 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 KeyCode::End if !app.themes.is_empty() => {
                     app.preview_theme(app.themes.len() - 1);
                 }
+                KeyCode::PageUp => {
+                    let page = app.popup_visible_height.max(1);
+                    app.preview_theme(app.theme_idx.saturating_sub(page));
+                }
+                KeyCode::PageDown if !app.themes.is_empty() => {
+                    let page = app.popup_visible_height.max(1);
+                    app.preview_theme((app.theme_idx + page).min(app.themes.len() - 1));
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     let index = if app.theme_idx == 0 {
                         app.themes.len().saturating_sub(1)
@@ -1229,28 +1238,40 @@ mod tests {
 
     #[test]
     fn theme_picker_cancel_restores_original_theme() {
-        let mut app = App::new();
-        let original = app.theme.name.clone();
+        let default = theme::default_theme();
+        let mut alternate = default;
+        alternate.accent = Color::Red;
+        let mut app = App::with_themes(
+            vec![("default".into(), default), ("alternate".into(), alternate)],
+            0,
+        );
+        let original = app.theme;
 
         app.enter_theme_picker();
         app.preview_theme(1);
-        assert_ne!(app.theme.name, original);
+        assert_ne!(app.theme, original);
         app.cancel_theme_picker();
 
-        assert_eq!(app.theme.name, original);
+        assert_eq!(app.theme, original);
         assert_eq!(app.mode, Mode::Browse);
     }
 
     #[test]
     fn theme_picker_confirm_keeps_previewed_theme() {
-        let mut app = App::new();
+        let default = theme::default_theme();
+        let mut alternate = default;
+        alternate.accent = Color::Red;
+        let mut app = App::with_themes(
+            vec![("default".into(), default), ("alternate".into(), alternate)],
+            0,
+        );
 
         app.enter_theme_picker();
         app.preview_theme(1);
-        let previewed = app.theme.name.clone();
+        let previewed = app.theme;
         app.confirm_theme();
 
-        assert_eq!(app.theme.name, previewed);
+        assert_eq!(app.theme, previewed);
         assert_eq!(app.mode, Mode::Browse);
     }
 }

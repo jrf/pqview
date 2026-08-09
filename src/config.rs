@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub theme: Option<String>,
     pub theme_catalog: Option<String>,
@@ -40,7 +41,9 @@ pub fn expand_path(path: &str) -> PathBuf {
 }
 
 fn config_path() -> PathBuf {
-    if let Some(directory) = std::env::var_os("XDG_CONFIG_HOME") {
+    if let Some(directory) = std::env::var_os("XDG_CONFIG_HOME")
+        && !directory.is_empty()
+    {
         return Path::new(&directory).join("pqview/config.toml");
     }
     home_dir()
@@ -71,5 +74,13 @@ theme_catalog = "~/.config/themes/catalog.toml"
             config.theme_catalog.as_deref(),
             Some("~/.config/themes/catalog.toml")
         );
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored() {
+        let config: Config = toml::from_str("future_option = 42\n").unwrap();
+
+        assert!(config.theme.is_none());
+        assert!(config.theme_catalog.is_none());
     }
 }
