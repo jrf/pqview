@@ -13,3 +13,5 @@ textwrap = "0.16"
 anyhow = "1"
 nucleo-matcher = "0.3"
 tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

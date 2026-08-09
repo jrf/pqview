@@ -19,6 +19,24 @@ pub fn rank(matcher: &mut Matcher, query: &str, source: &[String]) -> Vec<usize>
     scored.into_iter().map(|(index, _)| index).collect()
 }
 
+pub fn match_indices(query: &str, candidate: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths());
+    let mut buffer = Vec::new();
+    let haystack = Utf32Str::new(candidate, &mut buffer);
+    let mut indices = Vec::new();
+    let _ = pattern.indices(haystack, &mut matcher, &mut indices);
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+        .into_iter()
+        .filter_map(|index| usize::try_from(index).ok())
+        .collect()
+}
+
 pub fn walk_parquet_files(
     root: &Path,
     dir: &Path,
@@ -71,6 +89,14 @@ mod tests {
         let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
         let source = vec!["alpha.parquet".into(), "beta.parquet".into()];
         assert_eq!(rank(&mut matcher, "alp", &source), vec![0]);
+    }
+
+    #[test]
+    fn identifies_fuzzy_match_characters() {
+        assert_eq!(
+            match_indices("spq", "synthetic/path.parquet"),
+            vec![0, 10, 18]
+        );
     }
 
     #[test]

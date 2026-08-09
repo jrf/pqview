@@ -45,7 +45,7 @@ If no file is given, the app opens a fuzzy file picker rooted at the current dir
 | `x` | Exclude null and empty values in the focused column |
 | `v` | Choose visible columns |
 | `w` | Export filtered rows to Parquet |
-| `t` | Cycle the color theme |
+| `t` | Open the theme picker (live preview) |
 | `C` | Clear all filters and search |
 | `q` / `Esc` | Quit |
 
@@ -61,6 +61,15 @@ Powered by [nucleo](https://crates.io/crates/nucleo-matcher).
 | `Enter` | Open file |
 | `Ctrl+U` | Clear query |
 | `Esc` | Cancel (or quit if no file loaded yet) |
+
+### Theme picker
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrows | Preview themes (wraps at either end) |
+| `Home` / `End` | Preview first / last theme |
+| `Enter` | Apply the previewed theme for this session |
+| `Esc` | Cancel and restore the previous theme |
 
 ### Filter mode
 
@@ -105,6 +114,46 @@ Search does case-insensitive substring matching within the filtered results. Mat
 ### Export
 
 Press `w` in browse mode to edit the output path, then press `Enter`. Export runs in the background, writes only visible columns, and does not overwrite an existing file.
+
+## Themes
+
+Without configuration, pqview offers its five built-in themes. To share themes with pdfterm and MDR, create `~/.config/pqview/config.toml` (or `$XDG_CONFIG_HOME/pqview/config.toml`):
+
+```toml
+theme = "~/.config/themes/tokyo-night-moon.toml"
+theme_catalog = "~/.config/themes/catalog.toml"
+```
+
+`theme` selects the startup theme. `theme_catalog` supplies the picker entries through an explicit list; pqview does not scan the containing directory:
+
+```toml
+themes = [
+  "~/.config/themes/tokyo-night-moon.toml",
+  "~/.config/themes/catppuccin-mocha.toml",
+]
+```
+
+Theme files use the shared pdfterm/MDR semantic schema. Values in `[ui]` refer to names from `[colors]`; omitted roles use the Tokyo Night Moon fallback palette.
+
+```toml
+[colors]
+bg = "#222436"
+bg_dark = "#1e2030"
+blue = "#82aaff"
+magenta = "#c099ff"
+text = "#c8d3f5"
+muted = "#636da6"
+
+[ui]
+background = "bg"
+background_dark = "bg_dark"
+accent = "magenta"
+selection = "blue"
+text = "text"
+text_muted = "muted"
+picker_accent = "blue"
+picker_matched = "magenta"
+```
 
 ## Architecture
 

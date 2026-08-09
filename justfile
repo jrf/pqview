@@ -9,7 +9,8 @@ install: build
     if [ "$(uname)" = "Darwin" ]; then
         codesign --force --sign - target/release/pqview
     fi
-    cp target/release/pqview ~/.cargo/bin/
+    install -m 755 target/release/pqview ~/.cargo/bin/pqview.next
+    mv -f ~/.cargo/bin/pqview.next ~/.cargo/bin/pqview
 
 clean:
     cargo clean

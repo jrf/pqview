@@ -1,5 +1,6 @@
 use crate::app::{App, Mode};
 use crate::input;
+use crate::picker;
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -8,6 +9,10 @@ use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    f.render_widget(
+        Block::default().style(Style::default().bg(app.theme.background)),
+        area,
+    );
 
     if app.mode == Mode::Filter {
         draw_with_popup(f, app, area, DrawPopup::Filter);
@@ -20,7 +25,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if app.mode == Mode::FilePicker {
-        draw_with_popup(f, app, area, DrawPopup::FilePicker);
+        draw_file_picker_popup(f, app, area);
+        return;
+    }
+
+    if app.mode == Mode::ThemePicker {
+        draw_theme_picker_popup(f, app, area);
         return;
     }
 
@@ -56,7 +66,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 enum DrawPopup {
     Filter,
     Columns,
-    FilePicker,
 }
 
 fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
@@ -84,30 +93,30 @@ fn draw_with_popup(f: &mut Frame, app: &mut App, area: Rect, popup: DrawPopup) {
     match popup {
         DrawPopup::Filter => draw_filter_popup(f, app, area),
         DrawPopup::Columns => draw_columns_popup(f, app, area),
-        DrawPopup::FilePicker => draw_file_picker_popup(f, app, area),
     }
 }
 
 fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
-    let popup_area = centered_rect(70, 70, area);
+    let popup_area = picker_rect(area);
+    let surface = t.background_deep;
+    let chrome = t.background_dark;
+    let selection = t.surface_selected;
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(t.background)),
+        area,
+    );
     f.render_widget(Clear, popup_area);
 
-    let bottom = format!(
-        " {}/{} | Enter open | Esc {} ",
-        app.picker_matches.len(),
-        app.picker_strs.len(),
-        if app.file.is_some() { "cancel" } else { "quit" },
-    );
-
-    let title = format!(" Open Parquet File — {} ", app.picker_root.display());
+    let title = format!(" {} ", shorten_path(&app.picker_root.display().to_string()));
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(t.accent).bold())
-        .title_bottom(bottom)
+        .style(Style::default().bg(surface).fg(t.text))
+        .title_style(Style::default().fg(t.picker_accent).bg(surface).bold())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.accent));
+        .border_style(Style::default().fg(t.picker_border));
 
     let inner = block.inner(popup_area);
     f.render_widget(block, popup_area);
@@ -116,43 +125,40 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let filter_line = if app.picker_query.is_empty() {
+        Line::from(Span::styled(
+            " type to filter...",
+            Style::default().fg(t.text_muted).bg(chrome),
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled(" > ", Style::default().fg(t.picker_accent).bg(chrome)),
+            Span::styled(
+                app.picker_query.as_str(),
+                Style::default().fg(t.text).bg(chrome),
+            ),
         ])
-        .split(inner);
-
-    let prompt_prefix = Span::styled("> ", Style::default().fg(t.accent).bold());
-    let query_span = Span::styled(&app.picker_query, Style::default().fg(t.text));
-    let prompt = Paragraph::new(Line::from(vec![prompt_prefix, query_span]));
-    f.render_widget(prompt, chunks[0]);
-
-    f.set_cursor_position((
-        chunks[0].x + 2 + input::display_width(&app.picker_query, app.picker_cursor),
-        chunks[0].y,
-    ));
-
-    let divider = "─".repeat(chunks[1].width as usize);
+    };
     f.render_widget(
-        Paragraph::new(Span::styled(divider, Style::default().fg(t.border))),
-        chunks[1],
+        Paragraph::new(filter_line).style(Style::default().bg(chrome)),
+        rows[0],
     );
 
-    if app.picker_strs.is_empty() {
-        let msg = Paragraph::new(format!(
-            "No .parquet files found under {}",
-            app.picker_root.display()
-        ))
-        .style(Style::default().fg(t.text_muted))
-        .alignment(Alignment::Center);
-        f.render_widget(msg, chunks[2]);
-        return;
+    if !app.picker_query.is_empty() {
+        f.set_cursor_position((
+            rows[0].x + 3 + input::display_width(&app.picker_query, app.picker_cursor),
+            rows[0].y,
+        ));
     }
 
-    let visible_height = chunks[2].height as usize;
+    let visible_height = rows[1].height as usize;
     app.popup_visible_height = visible_height;
     let scroll = if app.picker_idx >= visible_height {
         app.picker_idx - visible_height + 1
@@ -160,25 +166,242 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
         0
     };
 
-    let items: Vec<ListItem> = app
+    app.picker_scroll = scroll;
+    let mut lines: Vec<Line> = app
         .picker_matches
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_height)
-        .map(|(i, &cand_idx)| {
-            let s = &app.picker_strs[cand_idx];
-            let is_cursor = i == app.picker_idx;
-            let style = if is_cursor {
-                Style::default().fg(t.accent).bg(t.surface_focused).bold()
-            } else {
-                Style::default().fg(t.text)
-            };
-            ListItem::new(s.as_str()).style(style)
+        .filter_map(|(position, &candidate_index)| {
+            app.picker_strs.get(candidate_index).map(|candidate| {
+                picker_entry_line(
+                    candidate,
+                    &app.picker_query,
+                    position == app.picker_idx,
+                    rows[1].width as usize,
+                    surface,
+                    selection,
+                    t,
+                )
+            })
         })
         .collect();
+    if lines.is_empty() {
+        let message = if app.picker_strs.is_empty() {
+            "   No Parquet files found"
+        } else {
+            "   No matches"
+        };
+        lines.push(Line::from(Span::styled(
+            message,
+            Style::default().fg(t.text_muted).bg(surface),
+        )));
+    }
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(surface)),
+        rows[1],
+    );
 
-    f.render_widget(List::new(items), chunks[2]);
+    let position = if app.picker_matches.is_empty() {
+        0
+    } else {
+        app.picker_idx + 1
+    };
+    let action = if app.file.is_some() { "cancel" } else { "quit" };
+    f.render_widget(
+        Paragraph::new(picker_hint_line(
+            &[("enter", "open"), ("esc", action)],
+            format!("{position}/{}", app.picker_matches.len()),
+            chrome,
+            selection,
+            t,
+        ))
+        .style(Style::default().bg(chrome)),
+        rows[2],
+    );
+}
+
+fn picker_entry_line<'a>(
+    candidate: &'a str,
+    query: &str,
+    selected: bool,
+    width: usize,
+    surface: Color,
+    selection: Color,
+    t: &Theme,
+) -> Line<'a> {
+    let background = if selected { selection } else { surface };
+    let matches = picker::match_indices(query, candidate);
+    let basename_start = candidate
+        .char_indices()
+        .rev()
+        .find(|(_, character)| *character == '/')
+        .map_or(0, |(index, _)| candidate[..=index].chars().count());
+    let mut spans = vec![Span::styled(
+        if selected { "▌ " } else { "  " },
+        Style::default().fg(t.picker_accent).bg(background),
+    )];
+    for (index, character) in candidate.chars().enumerate() {
+        let matched = matches.binary_search(&index).is_ok();
+        let foreground = if matched {
+            t.picker_matched
+        } else if index < basename_start {
+            t.picker_directory
+        } else {
+            t.text
+        };
+        let mut style = Style::default().fg(foreground).bg(background);
+        if matched || (selected && index >= basename_start) {
+            style = style.bold();
+        }
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    let mut line = Line::from(spans);
+    let used = line.width();
+    if used < width {
+        line.spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(background),
+        ));
+    }
+    line
+}
+
+fn picker_hint_line(
+    bindings: &[(&str, &str)],
+    status: String,
+    chrome: Color,
+    selection: Color,
+    t: &Theme,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(" ", Style::default().bg(chrome))];
+    for (key, action) in bindings {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().fg(t.key).bg(selection).bold(),
+        ));
+        spans.push(Span::styled(
+            format!(" {action}  "),
+            Style::default().fg(t.text_muted).bg(chrome),
+        ));
+    }
+    spans.push(Span::styled(
+        status,
+        Style::default().fg(t.text_muted).bg(chrome),
+    ));
+    Line::from(spans)
+}
+
+fn draw_theme_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = &app.theme;
+    let popup_area = picker_rect(area);
+    let surface = t.background_deep;
+    let chrome = t.background_dark;
+    let selection = t.surface_selected;
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(t.background)),
+        area,
+    );
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Themes ")
+        .style(Style::default().bg(surface).fg(t.text))
+        .title_style(Style::default().fg(t.picker_accent).bg(surface).bold())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.picker_border));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    if inner.height < 2 || inner.width < 4 {
+        return;
+    }
+
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let visible_height = rows[0].height as usize;
+    app.popup_visible_height = visible_height;
+    let scroll = if app.theme_idx >= visible_height {
+        app.theme_idx - visible_height + 1
+    } else {
+        0
+    };
+    let lines = app
+        .themes
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(index, theme)| {
+            let selected = index == app.theme_idx;
+            let background = if selected { selection } else { surface };
+            let marker = if selected { "▌ " } else { "  " };
+            let mut line = Line::from(vec![
+                Span::styled(marker, Style::default().fg(t.picker_accent).bg(background)),
+                Span::styled(
+                    theme.name.clone(),
+                    Style::default()
+                        .fg(if selected { t.selection } else { t.text })
+                        .bg(background)
+                        .bold(),
+                ),
+            ]);
+            let used = line.width();
+            let width = rows[0].width as usize;
+            if used < width {
+                line.spans.push(Span::styled(
+                    " ".repeat(width - used),
+                    Style::default().bg(background),
+                ));
+            }
+            line
+        })
+        .collect::<Vec<_>>();
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(surface)),
+        rows[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(picker_hint_line(
+            &[("j/k", "preview"), ("enter", "apply"), ("esc", "cancel")],
+            format!("{}/{}", app.theme_idx + 1, app.themes.len()),
+            chrome,
+            selection,
+            t,
+        ))
+        .style(Style::default().bg(chrome)),
+        rows[1],
+    );
+}
+
+fn picker_rect(area: Rect) -> Rect {
+    let width = if area.width > 4 {
+        (area.width * 3 / 4).max(50).min(area.width - 4)
+    } else {
+        area.width.max(1)
+    };
+    let height = if area.height > 4 {
+        (area.height * 3 / 4).max(6).min(area.height - 2)
+    } else {
+        area.height.max(1)
+    };
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn shorten_path(path: &str) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| {
+            path.strip_prefix(home.to_string_lossy().as_ref())
+                .map(|suffix| format!("~{suffix}"))
+        })
+        .unwrap_or_else(|| path.to_string())
 }
 
 fn draw_filter_popup(f: &mut Frame, app: &mut App, area: Rect) {
@@ -864,4 +1087,77 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn file_picker_uses_pdfterm_panel_layout() {
+        let mut app = App::new();
+        app.mode = Mode::FilePicker;
+        app.picker_root = "/synthetic/root".into();
+        app.picker_strs = vec!["nested/synthetic.parquet".into()];
+        app.picker_matches = vec![0];
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content()
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("/synthetic/root"));
+        assert!(text.contains("type to filter..."));
+        assert!(text.contains("nested/synthetic.parquet"));
+        assert!(text.contains("enter  open"));
+        assert!(text.contains("esc  quit"));
+        assert!(text.contains("1/1"));
+
+        assert_eq!(buffer.cell((0, 0)).unwrap().bg, app.theme.background);
+        assert_eq!(buffer.cell((11, 4)).unwrap().bg, app.theme.background_dark);
+        assert_eq!(buffer.cell((11, 5)).unwrap().symbol(), "▌");
+        assert_eq!(buffer.cell((11, 5)).unwrap().bg, app.theme.surface_selected);
+    }
+
+    #[test]
+    fn file_picker_handles_compact_terminals() {
+        for (width, height) in [(1, 1), (4, 4), (40, 5)] {
+            let mut app = App::new();
+            app.mode = Mode::FilePicker;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        }
+    }
+
+    #[test]
+    fn theme_picker_uses_preview_panel_layout() {
+        let mut app = App::new();
+        app.mode = Mode::ThemePicker;
+        app.theme_idx = 1;
+        app.theme = app.themes[1].clone();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Themes"));
+        assert!(text.contains("Catppuccin"));
+        assert!(text.contains("j/k  preview"));
+        assert!(text.contains("enter  apply"));
+        assert!(text.contains("esc  cancel"));
+        assert!(text.contains("2/5"));
+    }
 }

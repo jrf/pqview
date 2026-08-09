@@ -1,5 +1,6 @@
 mod app;
 mod background;
+mod config;
 mod input;
 mod picker;
 mod render;

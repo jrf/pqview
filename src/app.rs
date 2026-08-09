@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 const PAGE_SIZE: u32 = 1000;
 const PICKER_MAX_DEPTH: usize = 6;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
     Browse,
     Search,
@@ -26,6 +26,7 @@ pub enum Mode {
     Columns,
     Export,
     FilePicker,
+    ThemePicker,
 }
 
 pub struct App {
@@ -89,7 +90,9 @@ pub struct App {
     pub filter_values_loading: bool,
     pub flash: Option<(String, Instant)>,
     pub theme: Theme,
+    pub themes: Vec<Theme>,
     pub theme_idx: usize,
+    theme_original_idx: Option<usize>,
     query_worker: QueryWorker,
     next_query_id: u64,
     active_query_id: u64,
@@ -99,8 +102,15 @@ pub struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self::with_themes(theme::built_in_themes(), 0)
+    }
+
+    fn with_themes(themes: Vec<Theme>, theme_idx: usize) -> Self {
         let picker_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let theme_idx = theme_idx.min(themes.len().saturating_sub(1));
+        let active_theme = themes[theme_idx].clone();
         Self {
             mode: Mode::Browse,
             file: None,
@@ -145,8 +155,10 @@ impl App {
             loading: false,
             filter_values_loading: false,
             flash: None,
-            theme: theme::THEMES[0].clone(),
-            theme_idx: 0,
+            theme: active_theme,
+            themes,
+            theme_idx,
+            theme_original_idx: None,
             query_worker: QueryWorker::new(PAGE_SIZE),
             next_query_id: 0,
             active_query_id: 0,
@@ -215,10 +227,29 @@ impl App {
         self.snap_filter_column();
     }
 
-    fn cycle_theme(&mut self) {
-        self.theme_idx = (self.theme_idx + 1) % theme::THEMES.len();
-        self.theme = theme::THEMES[self.theme_idx].clone();
+    fn enter_theme_picker(&mut self) {
+        self.theme_original_idx = Some(self.theme_idx);
+        self.mode = Mode::ThemePicker;
+    }
+
+    fn preview_theme(&mut self, index: usize) {
+        if let Some(theme) = self.themes.get(index).cloned() {
+            self.theme_idx = index;
+            self.theme = theme;
+        }
+    }
+
+    fn confirm_theme(&mut self) {
+        self.theme_original_idx = None;
+        self.mode = Mode::Browse;
         self.flash = Some((format!("Theme: {}", self.theme.name), Instant::now()));
+    }
+
+    fn cancel_theme_picker(&mut self) {
+        if let Some(original) = self.theme_original_idx.take() {
+            self.preview_theme(original);
+        }
+        self.mode = Mode::Browse;
     }
 
     fn toggle_exclude_empty(&mut self) {
@@ -710,7 +741,9 @@ enum PopupSource {
 }
 
 pub fn run(file: Option<PathBuf>) -> Result<()> {
-    let mut app = App::new();
+    let config = crate::config::Config::load();
+    let (themes, selected_theme) = theme::configured_themes(&config);
+    let mut app = App::with_themes(themes, selected_theme);
 
     if let Some(path) = file {
         if let Err(error) = app.load_file(path) {
@@ -881,7 +914,7 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                     app.enter_columns_mode();
                 }
                 KeyCode::Char('t') => {
-                    app.cycle_theme();
+                    app.enter_theme_picker();
                 }
                 KeyCode::Char('w') => {
                     if app.exporting {
@@ -1052,6 +1085,27 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
                 }
                 _ => {}
             },
+
+            Mode::ThemePicker => match key.code {
+                KeyCode::Esc => app.cancel_theme_picker(),
+                KeyCode::Enter => app.confirm_theme(),
+                KeyCode::Home => app.preview_theme(0),
+                KeyCode::End if !app.themes.is_empty() => {
+                    app.preview_theme(app.themes.len() - 1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let index = if app.theme_idx == 0 {
+                        app.themes.len().saturating_sub(1)
+                    } else {
+                        app.theme_idx - 1
+                    };
+                    app.preview_theme(index);
+                }
+                KeyCode::Down | KeyCode::Char('j') if !app.themes.is_empty() => {
+                    app.preview_theme((app.theme_idx + 1) % app.themes.len());
+                }
+                _ => {}
+            },
         }
     }
 
@@ -1167,4 +1221,36 @@ fn popup_page_down(cursor: &mut usize, len: usize, page: usize) {
         return;
     }
     *cursor = (*cursor + page).min(len - 1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_picker_cancel_restores_original_theme() {
+        let mut app = App::new();
+        let original = app.theme.name.clone();
+
+        app.enter_theme_picker();
+        app.preview_theme(1);
+        assert_ne!(app.theme.name, original);
+        app.cancel_theme_picker();
+
+        assert_eq!(app.theme.name, original);
+        assert_eq!(app.mode, Mode::Browse);
+    }
+
+    #[test]
+    fn theme_picker_confirm_keeps_previewed_theme() {
+        let mut app = App::new();
+
+        app.enter_theme_picker();
+        app.preview_theme(1);
+        let previewed = app.theme.name.clone();
+        app.confirm_theme();
+
+        assert_eq!(app.theme.name, previewed);
+        assert_eq!(app.mode, Mode::Browse);
+    }
 }
