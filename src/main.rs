@@ -3,6 +3,7 @@ mod background;
 mod config;
 mod input;
 mod picker;
+mod recent;
 mod render;
 mod search;
 mod terminal_session;

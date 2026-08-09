@@ -1,6 +1,7 @@
 use crate::background::{QueryRequest, QueryResponse, QueryWorker};
 use crate::input;
 use crate::picker;
+use crate::recent;
 use crate::render;
 use crate::search;
 use crate::terminal_session;
@@ -62,6 +63,7 @@ pub struct App {
     pub picker_root: PathBuf,
     pub picker_paths: Vec<PathBuf>,
     pub picker_strs: Vec<String>,
+    pub picker_is_recent: Vec<bool>,
     pub picker_matches: Vec<usize>,
     pub picker_query: String,
     pub picker_cursor: usize,
@@ -132,6 +134,7 @@ impl App {
             picker_root,
             picker_paths: Vec::new(),
             picker_strs: Vec::new(),
+            picker_is_recent: Vec::new(),
             picker_matches: Vec::new(),
             picker_query: String::new(),
             picker_cursor: 0,
@@ -657,6 +660,7 @@ impl App {
     pub fn enter_file_picker(&mut self) {
         self.picker_paths.clear();
         self.picker_strs.clear();
+        self.picker_is_recent.clear();
         picker::walk_parquet_files(
             &self.picker_root,
             &self.picker_root,
@@ -674,6 +678,11 @@ impl App {
         let strs: Vec<String> = order.iter().map(|i| self.picker_strs[*i].clone()).collect();
         self.picker_paths = paths;
         self.picker_strs = strs;
+        self.picker_is_recent = picker::prepend_recents(
+            &mut self.picker_paths,
+            &mut self.picker_strs,
+            recent::load(),
+        );
         self.picker_query.clear();
         self.picker_cursor = 0;
         self.picker_idx = 0;
@@ -698,6 +707,9 @@ impl App {
         let path = self.picker_paths[path_idx].clone();
         match self.load_file(path) {
             Ok(()) => {
+                if let Some(path) = &self.file {
+                    recent::record(path);
+                }
                 self.mode = Mode::Browse;
             }
             Err(e) => {
@@ -707,6 +719,7 @@ impl App {
     }
 
     fn load_file(&mut self, path: PathBuf) -> Result<()> {
+        let path = path.canonicalize()?;
         let schema = search::read_schema(&path)?;
         let columns: Vec<String> = schema.iter().map(|(name, _)| name.to_string()).collect();
         if columns.is_empty() {
@@ -747,8 +760,15 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
     let mut app = App::with_themes(themes, selected_theme);
 
     if let Some(path) = file {
-        if let Err(error) = app.load_file(path) {
-            app.flash = Some((format!("Load error: {error}"), Instant::now()));
+        match app.load_file(path) {
+            Ok(()) => {
+                if let Some(path) = &app.file {
+                    recent::record(path);
+                }
+            }
+            Err(error) => {
+                app.flash = Some((format!("Load error: {error}"), Instant::now()));
+            }
         }
     } else {
         app.enter_file_picker();

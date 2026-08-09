@@ -79,6 +79,45 @@ pub fn walk_parquet_files(
     }
 }
 
+/// Promotes valid recent Parquet files ahead of the recursive listing while
+/// preserving their most-recent-first order and avoiding duplicates.
+pub fn prepend_recents(
+    paths: &mut Vec<PathBuf>,
+    labels: &mut Vec<String>,
+    recents: Vec<PathBuf>,
+) -> Vec<bool> {
+    let mut recent_paths = Vec::new();
+    let mut recent_labels = Vec::new();
+
+    for path in recents {
+        if !path.is_file()
+            || path
+                .extension()
+                .is_none_or(|extension| extension != "parquet")
+        {
+            continue;
+        }
+        if let Some(position) = paths.iter().position(|existing| existing == &path) {
+            paths.remove(position);
+            labels.remove(position);
+        }
+        let label = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        recent_paths.push(path);
+        recent_labels.push(label);
+    }
+
+    let recent_count = recent_paths.len();
+    recent_paths.append(paths);
+    recent_labels.append(labels);
+    *paths = recent_paths;
+    *labels = recent_labels;
+
+    (0..paths.len()).map(|index| index < recent_count).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +155,46 @@ mod tests {
 
         assert_eq!(labels, vec!["nested/synthetic.parquet"]);
         assert_eq!(paths, vec![nested.join("synthetic.parquet")]);
+    }
+
+    #[test]
+    fn prepends_recents_without_duplicating_discovered_files() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let listed = root.path().join("listed.parquet");
+        let recent = other.path().join("recent.parquet");
+        std::fs::write(&listed, []).unwrap();
+        std::fs::write(&recent, []).unwrap();
+        let mut paths = vec![listed.clone()];
+        let mut labels = vec!["listed.parquet".into()];
+
+        let flags = prepend_recents(
+            &mut paths,
+            &mut labels,
+            vec![listed.clone(), recent.clone()],
+        );
+
+        assert_eq!(paths, vec![listed, recent]);
+        assert_eq!(labels, vec!["listed.parquet", "recent.parquet"]);
+        assert_eq!(flags, vec![true, true]);
+    }
+
+    #[test]
+    fn ignores_stale_and_non_parquet_recents() {
+        let directory = tempfile::tempdir().unwrap();
+        let text = directory.path().join("synthetic.txt");
+        std::fs::write(&text, []).unwrap();
+        let mut paths = Vec::new();
+        let mut labels = Vec::new();
+
+        let flags = prepend_recents(
+            &mut paths,
+            &mut labels,
+            vec![directory.path().join("missing.parquet"), text],
+        );
+
+        assert!(paths.is_empty());
+        assert!(labels.is_empty());
+        assert!(flags.is_empty());
     }
 }

@@ -160,33 +160,61 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
 
     let visible_height = rows[1].height as usize;
     app.popup_visible_height = visible_height;
-    let scroll = if app.picker_idx >= visible_height {
-        app.picker_idx - visible_height + 1
+    let recent_heading_index = if app.picker_query.is_empty() {
+        app.picker_matches.iter().position(|candidate_index| {
+            app.picker_is_recent
+                .get(*candidate_index)
+                .copied()
+                .unwrap_or(false)
+        })
     } else {
-        0
+        None
     };
+    let mut scroll = 0;
+    while scroll < app.picker_idx {
+        let entries = app.picker_idx - scroll + 1;
+        let includes_heading =
+            recent_heading_index.is_some_and(|index| index >= scroll && index <= app.picker_idx);
+        if entries + usize::from(includes_heading) <= visible_height.max(1) {
+            break;
+        }
+        scroll += 1;
+    }
 
     app.picker_scroll = scroll;
-    let mut lines: Vec<Line> = app
-        .picker_matches
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(visible_height)
-        .filter_map(|(position, &candidate_index)| {
-            app.picker_strs.get(candidate_index).map(|candidate| {
-                picker_entry_line(
-                    candidate,
-                    &app.picker_query,
-                    position == app.picker_idx,
-                    rows[1].width as usize,
-                    surface,
-                    selection,
-                    t,
-                )
-            })
-        })
-        .collect();
+    let mut lines: Vec<Line> = Vec::with_capacity(visible_height);
+    for (position, &candidate_index) in app.picker_matches.iter().enumerate().skip(scroll) {
+        if Some(position) == recent_heading_index && lines.len() + 1 < visible_height {
+            lines.push(picker_recent_heading_line(
+                rows[1].width as usize,
+                surface,
+                t,
+            ));
+        }
+        if lines.len() >= visible_height {
+            break;
+        }
+        let Some(candidate) = app.picker_strs.get(candidate_index) else {
+            continue;
+        };
+        let Some(path) = app.picker_paths.get(candidate_index) else {
+            continue;
+        };
+        let is_recent = app
+            .picker_is_recent
+            .get(candidate_index)
+            .copied()
+            .unwrap_or(false);
+        lines.push(picker_entry_line(
+            candidate,
+            path,
+            is_recent,
+            &app.picker_query,
+            position == app.picker_idx,
+            rows[1].width as usize,
+            t,
+        ));
+    }
     if lines.is_empty() {
         let message = if app.picker_strs.is_empty() {
             "   No Parquet files found"
@@ -222,16 +250,35 @@ fn draw_file_picker_popup(f: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-fn picker_entry_line<'a>(
-    candidate: &'a str,
+fn picker_recent_heading_line(width: usize, surface: Color, t: &Theme) -> Line<'static> {
+    let label = " Most Recent ";
+    let mut spans = vec![
+        Span::styled("  ", Style::default().bg(surface)),
+        Span::styled(
+            label,
+            Style::default().fg(t.picker_recent).bg(surface).bold(),
+        ),
+    ];
+    let used = 2 + label.chars().count();
+    if used < width {
+        spans.push(Span::styled(
+            "─".repeat(width - used),
+            Style::default().fg(t.picker_border).bg(surface),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn picker_entry_line(
+    candidate: &str,
+    path: &std::path::Path,
+    is_recent: bool,
     query: &str,
     selected: bool,
     width: usize,
-    surface: Color,
-    selection: Color,
     t: &Theme,
-) -> Line<'a> {
-    let background = if selected { selection } else { surface };
+) -> Line<'static> {
+    let background = if selected { t.cursor_bg } else { t.background };
     let matches = picker::match_indices(query, candidate);
     let basename_start = candidate
         .char_indices()
@@ -248,6 +295,8 @@ fn picker_entry_line<'a>(
             t.picker_matched
         } else if index < basename_start {
             t.picker_directory
+        } else if is_recent {
+            t.picker_recent
         } else {
             t.text
         };
@@ -258,7 +307,28 @@ fn picker_entry_line<'a>(
         spans.push(Span::styled(character.to_string(), style));
     }
     let mut line = Line::from(spans);
-    let used = line.width();
+    let mut used = line.width();
+    if is_recent
+        && query.is_empty()
+        && let Some(parent) = path.parent()
+    {
+        let parent = shorten_path(&parent.to_string_lossy());
+        let available = width.saturating_sub(used + 2);
+        if available >= 3 {
+            let parent = truncate_left(&parent, available);
+            let parent_width = parent.width();
+            let gap = width.saturating_sub(used + parent_width);
+            line.spans.push(Span::styled(
+                " ".repeat(gap),
+                Style::default().bg(background),
+            ));
+            line.spans.push(Span::styled(
+                parent,
+                Style::default().fg(t.text_dim).bg(background),
+            ));
+            used = width;
+        }
+    }
     if used < width {
         line.spans.push(Span::styled(
             " ".repeat(width - used),
@@ -266,6 +336,29 @@ fn picker_entry_line<'a>(
         ));
     }
     line
+}
+
+fn truncate_left(value: &str, max_width: usize) -> String {
+    if value.width() <= max_width {
+        return value.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let suffix_width = max_width.saturating_sub(1);
+    let mut suffix = Vec::new();
+    let mut used = 0;
+    for character in value.chars().rev() {
+        let width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + width > suffix_width {
+            break;
+        }
+        suffix.push(character);
+        used += width;
+    }
+    suffix.reverse();
+    format!("…{}", suffix.into_iter().collect::<String>())
 }
 
 fn picker_hint_line(
@@ -1136,7 +1229,9 @@ mod tests {
         let mut app = App::new();
         app.mode = Mode::FilePicker;
         app.picker_root = "/synthetic/root".into();
+        app.picker_paths = vec!["/synthetic/root/nested/synthetic.parquet".into()];
         app.picker_strs = vec!["nested/synthetic.parquet".into()];
+        app.picker_is_recent = vec![false];
         app.picker_matches = vec![0];
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -1160,6 +1255,31 @@ mod tests {
         assert_eq!(buffer.cell((11, 4)).unwrap().bg, app.theme.background_dark);
         assert_eq!(buffer.cell((11, 5)).unwrap().symbol(), "▌");
         assert_eq!(buffer.cell((11, 5)).unwrap().bg, app.theme.cursor_bg);
+    }
+
+    #[test]
+    fn file_picker_labels_recent_files_with_parent_directory() {
+        let mut app = App::new();
+        app.mode = Mode::FilePicker;
+        app.picker_root = "/synthetic/root".into();
+        app.picker_paths = vec!["/synthetic/archive/recent.parquet".into()];
+        app.picker_strs = vec!["recent.parquet".into()];
+        app.picker_is_recent = vec![true];
+        app.picker_matches = vec![0];
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content()
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Most Recent"));
+        assert!(text.contains("recent.parquet"));
+        assert!(text.contains("/synthetic/archive"));
     }
 
     #[test]

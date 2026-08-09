@@ -53,6 +53,10 @@ If no file is given, the app opens a fuzzy file picker rooted at the current dir
 
 Powered by [nucleo](https://crates.io/crates/nucleo-matcher).
 
+Successfully opened files are tracked most-recent first in `$XDG_CACHE_HOME/pqview/recent`
+(or `~/.cache/pqview/recent`). Existing Parquet files appear in a **Most Recent** section
+with their parent directories for context.
+
 | Key | Action |
 |-----|--------|
 | Type | Fuzzy-filter candidates |
