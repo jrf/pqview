@@ -25,6 +25,21 @@ pqview [file.parquet]
 
 If no file is given, the app opens a fuzzy file picker rooted at the current directory (recursive, depth 6, skips hidden / `target` / `node_modules`).
 
+### Rust library
+
+Rust programs can run pqview in-process through its library entry point:
+
+```rust
+pqview::run(pqview::RunOptions {
+    file: Some("data.parquet".into()),
+    config: pqview::Config::load(),
+})?;
+```
+
+The call blocks until pqview exits and takes ownership of the process terminal while it runs.
+Interactive TUI callers should suspend their own terminal session first. Programs that need
+process isolation can continue launching the `pqview` binary instead.
+
 ## Keybindings
 
 ### Browse mode

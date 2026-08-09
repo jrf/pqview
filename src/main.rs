@@ -1,16 +1,6 @@
-mod app;
-mod background;
-mod config;
-mod input;
-mod picker;
-mod recent;
-mod render;
-mod search;
-mod terminal_session;
-mod theme;
-
 use anyhow::Result;
 use clap::Parser;
+use pqview::{Config, RunOptions};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -29,5 +19,8 @@ fn main() -> Result<()> {
         anyhow::bail!("File not found: {}", path.display());
     }
 
-    app::run(cli.file)
+    pqview::run(RunOptions {
+        file: cli.file,
+        config: Config::load(),
+    })
 }

@@ -754,21 +754,14 @@ enum PopupSource {
     Columns,
 }
 
-pub fn run(file: Option<PathBuf>) -> Result<()> {
-    let config = crate::config::Config::load();
-    let (themes, selected_theme) = theme::configured_themes(&config);
+pub(crate) fn run(file: Option<PathBuf>, config: &crate::config::Config) -> Result<()> {
+    let (themes, selected_theme) = theme::configured_themes(config);
     let mut app = App::with_themes(themes, selected_theme);
 
     if let Some(path) = file {
-        match app.load_file(path) {
-            Ok(()) => {
-                if let Some(path) = &app.file {
-                    recent::record(path);
-                }
-            }
-            Err(error) => {
-                app.flash = Some((format!("Load error: {error}"), Instant::now()));
-            }
+        app.load_file(path)?;
+        if let Some(path) = &app.file {
+            recent::record(path);
         }
     } else {
         app.enter_file_picker();
